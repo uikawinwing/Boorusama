@@ -59,27 +59,27 @@ jobs:
           PY
           cat env/dev.json
 
-      - name: Restore signing key
-        if: ${{ secrets.ANDROID_SIGNING_BUNDLE != '' }}
+      - name: Restore persistent signing key
         shell: bash
         env:
           ANDROID_SIGNING_BUNDLE: ${{ secrets.ANDROID_SIGNING_BUNDLE }}
         run: |
           set -euo pipefail
+
+          if [[ -z "$ANDROID_SIGNING_BUNDLE" ]]; then
+            echo 'ANDROID_SIGNING_BUNDLE is not configured.'
+            echo 'Add it under Settings -> Secrets and variables -> Actions.'
+            exit 1
+          fi
+
           printf '%s' "$ANDROID_SIGNING_BUNDLE" | base64 --decode > "$RUNNER_TEMP/android-signing.zip"
+          mkdir -p "$RUNNER_TEMP/android-signing"
           unzip -q "$RUNNER_TEMP/android-signing.zip" -d "$RUNNER_TEMP/android-signing"
           test -f "$RUNNER_TEMP/android-signing/personal-release.jks"
           test -f "$RUNNER_TEMP/android-signing/key.properties"
+
           cp "$RUNNER_TEMP/android-signing/key.properties" android/key.properties
           sed -i "s|^storeFile=.*$|storeFile=$RUNNER_TEMP/android-signing/personal-release.jks|" android/key.properties
-
-      - name: Require persistent signing key
-        if: ${{ secrets.ANDROID_SIGNING_BUNDLE == '' }}
-        shell: bash
-        run: |
-          echo 'ANDROID_SIGNING_BUNDLE is not configured.'
-          echo 'Add the signing bundle as a repository Actions secret before building.'
-          exit 1
 
       - name: Build personal APK
         shell: bash
