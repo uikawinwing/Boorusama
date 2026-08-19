@@ -105,3 +105,5 @@ jobs:
           path: release-artifacts/Boorusama-Personal-Premium.apk
           if-no-files-found: error
           retention-days: 30
+
+# Personal fork build workflow managed by uikawinwing.
