@@ -18,6 +18,8 @@ jobs:
     if: github.repository == 'uikawinwing/Boorusama'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      BOORUSAMA_USE_FVM: "false"
 
     steps:
       - name: Check out repository
@@ -42,6 +44,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "Flutter: $(flutter --version | head -n 1)"
+          echo "Dart: $(dart --version 2>&1)"
           ./init.sh
 
       - name: Enable Premium for this build only
