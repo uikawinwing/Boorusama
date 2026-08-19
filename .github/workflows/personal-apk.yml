@@ -1,0 +1,107 @@
+name: Build Personal APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'uikawinwing/Boorusama'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.9
+          cache: true
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+
+      - name: Initialize workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./init.sh
+
+      - name: Enable Premium for this build only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('env/dev.json')
+          data = json.loads(path.read_text(encoding='utf-8'))
+          data['PREMIUM_MODE'] = 'premium'
+          path.write_text(json.dumps(data, indent=4) + '\n', encoding='utf-8')
+          PY
+          cat env/dev.json
+
+      - name: Restore signing key
+        if: ${{ secrets.ANDROID_SIGNING_BUNDLE != '' }}
+        shell: bash
+        env:
+          ANDROID_SIGNING_BUNDLE: ${{ secrets.ANDROID_SIGNING_BUNDLE }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_SIGNING_BUNDLE" | base64 --decode > "$RUNNER_TEMP/android-signing.zip"
+          unzip -q "$RUNNER_TEMP/android-signing.zip" -d "$RUNNER_TEMP/android-signing"
+          test -f "$RUNNER_TEMP/android-signing/personal-release.jks"
+          test -f "$RUNNER_TEMP/android-signing/key.properties"
+          cp "$RUNNER_TEMP/android-signing/key.properties" android/key.properties
+          sed -i "s|^storeFile=.*$|storeFile=$RUNNER_TEMP/android-signing/personal-release.jks|" android/key.properties
+
+      - name: Require persistent signing key
+        if: ${{ secrets.ANDROID_SIGNING_BUNDLE == '' }}
+        shell: bash
+        run: |
+          echo 'ANDROID_SIGNING_BUNDLE is not configured.'
+          echo 'Add the signing bundle as a repository Actions secret before building.'
+          exit 1
+
+      - name: Build personal APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk \
+            --flavor dev \
+            --release \
+            --dart-define-from-file=env/dev.json \
+            -t lib/main.dart
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          cp build/app/outputs/flutter-apk/app-dev-release.apk release-artifacts/Boorusama-Personal-Premium.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Boorusama-Personal-Premium
+          path: release-artifacts/Boorusama-Personal-Premium.apk
+          if-no-files-found: error
+          retention-days: 30
