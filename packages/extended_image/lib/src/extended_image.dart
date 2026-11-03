@@ -4,16 +4,17 @@ import 'package:cache_manager/cache_manager.dart';
 import 'package:dio/dio.dart';
 import 'package:equatable/equatable.dart';
 import 'package:extended_image_library/extended_image_library.dart';
-import 'package:flutter/cupertino.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' hide Image;
+import 'package:material_ui/material_ui.dart' hide Image;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/semantics.dart';
 import 'package:path/path.dart' as path;
 import 'package:retriable/retriable.dart';
 
-import 'cached_network_avif_image.dart';
 import 'dio_extended_image_provider.dart';
+import 'network_decoder_native.dart'
+    if (dart.library.js_interop) 'network_decoder_web.dart';
 import 'image/raw_image.dart';
 import 'utils.dart';
 
@@ -109,40 +110,30 @@ class ExtendedImage extends StatefulWidget {
   }) : assert(cacheWidth == null || cacheWidth > 0),
        assert(cacheHeight == null || cacheHeight > 0),
        image = ExtendedResizeImage.resizeIfNeeded(
-         provider:
-             shouldUseAvif(
-               url,
-               platform: platform,
-               androidVersion: androidVersion,
-             )
-             ? CustomCachedNetworkAvifImageProvider(
-                 url,
-                 scale: scale,
-                 headers: headers,
-                 cacheManager: cacheManager,
-                 dio: dio,
-                 cancelToken: cancelToken,
-                 fetchStrategy: fetchStrategy,
-                 cacheKey: cacheKey,
-                 cacheMaxAge: cacheMaxAge ?? kDefaultImageCacheDuration,
-                 cacheWidth: cacheWidth,
-                 cacheHeight: cacheHeight,
-               )
-             : DioExtendedNetworkImageProvider(
-                 url,
-                 dio: dio,
-                 scale: scale,
-                 headers: headers,
-                 cache: cache,
-                 cancelToken: cancelToken,
-                 cacheKey: cacheKey,
-                 printError: printError,
-                 cacheRawData: cacheRawData,
-                 imageCacheName: imageCacheName,
-                 cacheMaxAge: cacheMaxAge ?? kDefaultImageCacheDuration,
-                 fetchStrategy: fetchStrategy,
-                 cacheManager: cacheManager,
-               ),
+         provider: networkImageDecoder(
+           useAvif: shouldUseAvif(
+             url,
+             platform: platform,
+             androidVersion: androidVersion,
+           ),
+           cacheWidth: cacheWidth,
+           cacheHeight: cacheHeight,
+           source: DioExtendedNetworkImageProvider(
+             url,
+             dio: dio,
+             scale: scale,
+             headers: headers,
+             cache: cache,
+             cancelToken: cancelToken,
+             cacheKey: cacheKey,
+             printError: printError,
+             cacheRawData: cacheRawData,
+             imageCacheName: imageCacheName,
+             cacheMaxAge: cacheMaxAge ?? kDefaultImageCacheDuration,
+             fetchStrategy: fetchStrategy,
+             cacheManager: cacheManager,
+           ),
+         ),
          compressionRatio: compressionRatio,
          maxBytes: maxBytes,
          cacheWidth: cacheWidth,
@@ -318,6 +309,7 @@ class _ExtendedImageState extends State<ExtendedImage>
   ImageStreamCompleterHandle? _completerHandle;
 
   ImageStreamListener? _imageStreamListener;
+  late final VoidCallback _reloadCallback;
 
   @override
   Widget build(BuildContext context) {
@@ -342,10 +334,7 @@ class _ExtendedImageState extends State<ExtendedImage>
           widget.errorWidget ??
               Container(
                 alignment: Alignment.center,
-                child: GestureDetector(
-                  onTap: () => reLoadImage(),
-                  child: const Text('Failed to load image'),
-                ),
+                child: const Text('Failed to load image'),
               ),
       },
     );
@@ -398,6 +387,10 @@ class _ExtendedImageState extends State<ExtendedImage>
   void dispose() {
     assert(_imageStream != null);
 
+    if (identical(_controller._reload, _reloadCallback)) {
+      _controller._reload = null;
+    }
+
     if (widget.controller == null) {
       _controller.dispose();
     }
@@ -422,6 +415,8 @@ class _ExtendedImageState extends State<ExtendedImage>
   @override
   void initState() {
     super.initState();
+    _reloadCallback = _reloadImage;
+    _controller._reload = _reloadCallback;
     WidgetsBinding.instance.addObserver(this);
     _scrollAwareContext = DisposableBuildContext<State<ExtendedImage>>(this);
   }
@@ -432,7 +427,7 @@ class _ExtendedImageState extends State<ExtendedImage>
     super.reassemble();
   }
 
-  void reLoadImage() {
+  void _reloadImage() {
     _resolveImage(true);
   }
 
@@ -614,9 +609,16 @@ class ExtendedImageController extends ChangeNotifier {
 
   final _cumulativeBytesLoaded = ValueNotifier<int?>(null);
   final _expectedTotalBytes = ValueNotifier<int?>(null);
+  VoidCallback? _reload;
 
   int? get cumulativeBytesLoaded => _cumulativeBytesLoaded.value;
   int? get expectedTotalBytes => _expectedTotalBytes.value;
+
+  /// Reloads the attached image.
+  ///
+  /// Consumers that offer retry behavior should call this from an explicit
+  /// retry control instead of making the entire failed image tappable.
+  void reload() => _reload?.call();
 
   void updateBytesLoaded(int loaded, int? total) {
     _cumulativeBytesLoaded.value = loaded;

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to build and publish."
+        description: "Release tag or branch to build"
         required: true
         default: ""
       prerelease:
@@ -17,6 +17,14 @@ on:
         required: true
         type: boolean
         default: false
+      smoke_run:
+        description: "Build all platforms; skip release publication."
+        type: boolean
+        default: false
+      windows_only:
+        description: "Build only Windows; skip release publication."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -26,33 +34,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    if: github.actor == 'khoadng'
+    name: Validate shared toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BOORUSAMA_USE_FVM: "false"
+    steps:
+      - name: Check out Boorusama
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: .fvmrc
+          cache: true
+
+      - name: Validate Flutter and Dart dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter --version
+          dart --version
+          flutter pub get --enforce-lockfile
+
   build:
     if: github.actor == 'khoadng'
+    needs: preflight
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: apk
-            os: ubuntu-latest
-            artifact_name: boorusama-apk
-          - target: linux-tar.gz
-            os: ubuntu-latest
-            artifact_name: boorusama-linux-tar-gz
-          - target: appimage
-            os: ubuntu-latest
-            artifact_name: boorusama-appimage
-          - target: windows-zip
-            os: windows-latest
-            artifact_name: boorusama-windows-zip
-          - target: ipa
-            os: macos-latest
-            artifact_name: boorusama-ipa
-          - target: dmg
-            os: macos-latest
-            artifact_name: boorusama-dmg
+        include: ${{ fromJSON(inputs.windows_only && !inputs.smoke_run &&
+          '[{"target":"windows-zip","os":"windows-latest","artifact_name":"boorusama-windows-zip"}]' ||
+          '[{"target":"apk","os":"ubuntu-latest","artifact_name":"boorusama-apk"},
+            {"target":"linux-tar.gz","os":"ubuntu-latest","artifact_name":"boorusama-linux-tar-gz"},
+            {"target":"appimage","os":"ubuntu-latest","artifact_name":"boorusama-appimage"},
+            {"target":"windows-zip","os":"windows-latest","artifact_name":"boorusama-windows-zip"},
+            {"target":"ipa","os":"macos-latest","artifact_name":"boorusama-ipa"},
+            {"target":"dmg","os":"macos-latest","artifact_name":"boorusama-dmg"}]') }}
 
     env:
       BOORUSAMA_USE_FVM: "false"
@@ -67,7 +92,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.41.9
+          flutter-version-file: .fvmrc
           cache: true
 
       - name: Set up Xcode
@@ -78,14 +103,50 @@ jobs:
 
       - name: Set up Android SDK
         if: matrix.target == 'apk'
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK packages
         if: matrix.target == 'apk'
         shell: bash
+        working-directory: packages/boorusama_cli
+        run: dart run boorusama_cli:boorusama setup android-sdk --ci
+
+      # Without key.properties Gradle silently signs with a throwaway debug key,
+      # so published APKs could not update each other.
+      - name: Configure Android release signing
+        if: matrix.target == 'apk' && !inputs.smoke_run
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing Android signing secret for $name"
+              exit 1
+            fi
+          done
+          keystore="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          {
+            echo "storeFile=$keystore"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > android/key.properties
+
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm
 
       - name: Install Linux desktop dependencies
         if: matrix.target == 'linux-tar.gz' || matrix.target == 'appimage'
@@ -99,22 +160,81 @@ jobs:
             libgtk-3-dev \
             liblzma-dev \
             libmpv-dev \
-            ninja-build \
             pkg-config
 
-      - name: Install Windows packaging dependencies
+      - name: Install Windows build and packaging dependencies
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $buildPath = $env:PATH
+          choco install meson ninja nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          Update-SessionEnvironment
+          # Strawberry ships unrelated MinGW tools, including a broken ccache.
+          # Keep those out of this MSVC build without removing Perl itself.
+          $nasmDirectory = Join-Path $env:ProgramFiles 'NASM'
+          if (-not (Test-Path (Join-Path $nasmDirectory 'nasm.exe'))) {
+            throw "Installed NASM was not found in $nasmDirectory"
+          }
+          $env:PATH = (("$nasmDirectory;$buildPath;$env:PATH" -split ';' | Where-Object {
+            $_ -and $_.Trim().Trim('"').TrimEnd('\', '/') -notmatch '(?i)[\\/]Strawberry[\\/]c[\\/]bin$'
+          }) | Select-Object -Unique) -join ';'
+          "PATH=$env:PATH" | Add-Content -Path $env:GITHUB_ENV
           Get-Command Compress-Archive
 
-      - name: Install Apple packaging dependencies
+      - name: Select Visual Studio CMake for Windows native builds
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.CMake.Project -property installationPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not $installation) { throw 'Visual Studio with C++ and CMake tools was not found.' }
+          $cmake = Join-Path $installation 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+          if (-not (Test-Path $cmake)) { throw "Visual Studio CMake was not found: $cmake" }
+          "CMAKE=$cmake" | Add-Content -Path $env:GITHUB_ENV
+          Split-Path $cmake | Add-Content -Path $env:GITHUB_PATH
+          Write-Host "Using CMake: $cmake"
+          & $cmake --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install Apple build and packaging dependencies
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          brew install create-dmg
+          brew install create-dmg meson ninja nasm
           sudo gem install cocoapods
+
+      - name: Check native build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          meson --version
+          ninja --version
+          nasm --version
+
+      - name: Enable Git long paths on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Check Windows compiler cache selection
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($name in @('ccache', 'sccache')) {
+            $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+            if ($tool) {
+              Write-Host "Using ${name}: $($tool.Source)"
+              if ($tool.Source -match '(?i)[\\/]Strawberry[\\/]c[\\/]bin[\\/]') {
+                throw "Strawberry compiler tools must not be on the build PATH: $($tool.Source)"
+              }
+              & $tool.Source --version
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
 
       - name: Initialize workspace
         shell: bash
@@ -142,7 +262,24 @@ jobs:
             args+=(--no-codesign)
           fi
 
-          ./build.sh "${args[@]}"
+          if [[ "${{ matrix.target }}" == "windows-zip" ]]; then
+            args+=(--flutter-verbose)
+          fi
+
+          ./build.sh "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/boorusama-build.log"
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ matrix.target }}
+          include-hidden-files: true
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/boorusama-build.log
+            .dart_tool/hooks_runner/**/stdout.txt
+            .dart_tool/hooks_runner/**/stderr.txt
+            .dart_tool/hooks_runner/**/meson-log.txt
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
@@ -152,7 +289,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: github.actor == 'khoadng'
+    if: github.actor == 'khoadng' && !inputs.smoke_run && !inputs.windows_only
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -168,7 +305,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.41.9
+          flutter-version-file: .fvmrc
           cache: true
 
       - name: Download build artifacts

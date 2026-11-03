@@ -5,6 +5,8 @@ import 'package:path/path.dart' show join;
 // Project imports:
 import '../../../../configs/config/types.dart';
 import '../../../../settings/types.dart';
+import '../../../sidecar/types.dart';
+import 'download_network_policy.dart';
 import 'metadata.dart';
 
 class DownloadOptions extends Equatable {
@@ -16,6 +18,8 @@ class DownloadOptions extends Equatable {
     this.headers,
     this.path,
     this.folderName,
+    this.sidecar,
+    this.networkConstraint = DownloadNetworkConstraint.unrestricted,
   });
 
   factory DownloadOptions.fromSettings(
@@ -27,6 +31,9 @@ class DownloadOptions extends Equatable {
     DownloaderMetadata? metadata,
     String? folderName,
     String? customPath,
+    SidecarSnapshot? sidecar,
+    DownloadNetworkConstraint networkConstraint =
+        DownloadNetworkConstraint.unrestricted,
   }) {
     final path = switch (customPath) {
       // User provided a custom path
@@ -45,12 +52,14 @@ class DownloadOptions extends Equatable {
       filename: filename,
       headers: headers,
       metadata: metadata,
+      sidecar: sidecar,
       skipIfExists: settings.downloadFileExistedBehavior.skipDownloadIfExists,
       path: switch (path) {
         final String p when p.isNotEmpty => join(p, folderName),
         _ => null,
       },
       folderName: folderName,
+      networkConstraint: networkConstraint,
     );
   }
 
@@ -61,6 +70,8 @@ class DownloadOptions extends Equatable {
   final Map<String, String>? headers;
   final String? path;
   final String? folderName;
+  final SidecarSnapshot? sidecar;
+  final DownloadNetworkConstraint networkConstraint;
 
   @override
   List<Object?> get props => [
@@ -71,5 +82,7 @@ class DownloadOptions extends Equatable {
     headers,
     path,
     folderName,
+    sidecar,
+    networkConstraint,
   ];
 }

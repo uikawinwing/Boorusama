@@ -8,12 +8,22 @@ import 'package:kurumi/material.dart';
 
 // Project imports:
 import '../loggers.dart';
+import 'connectivity_service.dart';
 import 'network_state.dart';
 
 const _serviceName = 'Connectivity';
 
 final connectivityProvider = StreamProvider<List<ConnectivityResult>>((ref) {
-  return Connectivity().onConnectivityChanged;
+  return ref.watch(connectivityServiceProvider).changes;
+});
+
+final currentConnectivityProvider = FutureProvider<List<ConnectivityResult>>((
+  ref,
+) {
+  final streamedResult = ref.watch(connectivityProvider).valueOrNull;
+  if (streamedResult != null) return streamedResult;
+
+  return ref.watch(connectivityServiceProvider).getCurrent();
 });
 
 final networkStateProvider = Provider<NetworkState>((ref) {

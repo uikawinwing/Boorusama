@@ -1,6 +1,9 @@
 // Dart imports:
 import 'dart:async';
 
+// Flutter imports:
+import 'package:flutter/foundation.dart';
+
 // Package imports:
 import 'package:cache_manager/cache_manager.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +12,7 @@ import 'package:kurumi/kurumi.dart';
 import 'package:kurumi/material.dart';
 
 // Project imports:
+import '../../../../../foundation/filesystem.dart';
 import '../../../../../foundation/loggers.dart';
 import '../../../../../foundation/platform.dart';
 import '../../../../configs/config/providers.dart';
@@ -85,13 +89,14 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
   StreamSubscription<bool>? _bufferingSubscription;
   var _isBuffering = false;
   var _isDisposing = false;
+  var _isPreparingSource = false;
   Timer? _cacheDelayTimer;
   String? _cachingUrl;
 
   VideoPlayerEngine get _resolvedEngine => VideoPlayerState.resolveVideoEngine(
     engine: widget.videoPlayerEngine,
     url: widget.url,
-    isAndroid: isAndroid(),
+    isAndroid: ref.read(appPlatformProvider).isAndroid,
   );
 
   VideoPlayerState get _currentState => VideoPlayerState.fromPlayerState(
@@ -120,7 +125,7 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
     super.didUpdateWidget(oldWidget);
 
     if (widget.url != oldWidget.url ||
-        widget.headers != oldWidget.headers ||
+        !mapEquals(widget.headers, oldWidget.headers) ||
         widget.videoPlayerEngine != oldWidget.videoPlayerEngine) {
       _log(
         widget.logger?.verbose,
@@ -173,6 +178,8 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
   Future<void> _initializePlayer() async {
     if (!mounted || _isDisposing) return;
 
+    setState(() => _isPreparingSource = true);
+
     try {
       _log(
         widget.logger?.debug,
@@ -209,6 +216,7 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
           _updatePlayerSettings();
 
           if (mounted && !_isDisposing) {
+            _isPreparingSource = false;
             setState(() {});
             if (_player case final player?) {
               widget.onVideoPlayerCreated?.call(player);
@@ -233,6 +241,8 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
       final oldPlayer = _player;
       final player = createBooruPlayer(
         engine: _resolvedEngine,
+        platform: ref.read(appPlatformProvider),
+        fileSystem: ref.read(appFileSystemProvider),
         userAgent: widget.userAgent,
       );
 
@@ -293,6 +303,7 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
         );
 
         _player = player;
+        _isPreparingSource = false;
         setState(() {});
         widget.onVideoPlayerCreated?.call(player);
 
@@ -317,6 +328,7 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
       if (mounted) {
         setState(() {
           _error = error.toString();
+          _isPreparingSource = false;
         });
       }
     }
@@ -378,47 +390,35 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
     super.dispose();
   }
 
-  /// Creates a VideoSource with caching information
+  /// Creates a VideoSource, preferring a valid cached file
   Future<VideoSource> _createVideoSource() async {
     final cacheManager = widget.cacheManager;
     if (cacheManager == null) {
       return StreamingVideoSource(widget.url);
     }
 
-    final cachedUrl = await _getOptimalVideoUrl(
-      cacheManager,
-      widget.url,
-      headers: widget.headers,
-    );
+    final cachedPath = await _getCachedVideoPath(cacheManager, widget.url);
 
-    return switch (cachedUrl == widget.url) {
-      true => StreamingVideoSource(widget.url),
-      false => CachedVideoSource.fromUrl(
-        cachedUrl: cachedUrl,
+    return switch (cachedPath) {
+      null => StreamingVideoSource(widget.url),
+      final path => CachedVideoSource(
+        filePath: path,
         originalUrl: widget.url,
       ),
     };
   }
 
-  /// Returns cached URL if available, otherwise returns streaming URL
-  Future<String> _getOptimalVideoUrl(
+  Future<String?> _getCachedVideoPath(
     VideoCacheManager cacheManager,
     String originalUrl, {
-    Map<String, String>? headers,
     Duration? maxAge = const Duration(days: 7),
   }) async {
     final isCached = await cacheManager.isVideoCached(
       originalUrl,
       maxAge: maxAge,
     );
-    if (isCached) {
-      final cachedPath = await cacheManager.getCachedVideoPath(originalUrl);
-      if (cachedPath != null) {
-        return 'file://$cachedPath';
-      }
-    }
 
-    return originalUrl;
+    return isCached ? cacheManager.getCachedVideoPath(originalUrl) : null;
   }
 
   void _scheduleDelayedCaching() {
@@ -464,6 +464,53 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
     });
   }
 
+  Widget _buildMedia({
+    required BooruPlayer? player,
+    required String? thumbnailUrl,
+    required double aspectRatio,
+    bool isBuffering = false,
+  }) => AspectRatio(
+    aspectRatio: aspectRatio,
+    child: KurumiHero(
+      tag: widget.heroTag,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child:
+                player?.buildPlayerWidget(context) ?? const SizedBox.shrink(),
+          ),
+          if (thumbnailUrl case final url?)
+            Positioned.fill(
+              child: ValueListenableBuilder(
+                valueListenable:
+                    player?.firstFrameRendered ??
+                    const AlwaysStoppedAnimation(false),
+                builder: (_, rendered, child) => IgnorePointer(
+                  child: Opacity(
+                    opacity: rendered && !_isPreparingSource ? 0 : 1,
+                    child: child,
+                  ),
+                ),
+                child: Consumer(
+                  builder: (_, ref, _) => BooruImage(
+                    config: ref.watchConfigAuth,
+                    borderRadius: BorderRadius.zero,
+                    aspectRatio: aspectRatio,
+                    imageUrl: url,
+                  ),
+                ),
+              ),
+            ),
+          if (isBuffering)
+            _BufferingOverlay(
+              thumbnailUrl: thumbnailUrl,
+              aspectRatio: aspectRatio,
+            ),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     return Center(
@@ -474,34 +521,11 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
           :final isBuffering,
           :final aspectRatio,
         ) =>
-          AspectRatio(
+          _buildMedia(
+            player: player,
+            thumbnailUrl: thumbnailUrl,
             aspectRatio: aspectRatio,
-            child: KurumiHero(
-              tag: widget.heroTag,
-              child: Stack(
-                children: [
-                  if (thumbnailUrl case final url?)
-                    Positioned.fill(
-                      child: Consumer(
-                        builder: (_, ref, _) => BooruImage(
-                          config: ref.watchConfigAuth,
-                          borderRadius: BorderRadius.zero,
-                          aspectRatio: aspectRatio,
-                          imageUrl: url,
-                        ),
-                      ),
-                    ),
-                  Positioned.fill(
-                    child: player.buildPlayerWidget(context),
-                  ),
-                  if (isBuffering)
-                    _BufferingOverlay(
-                      thumbnailUrl: thumbnailUrl,
-                      aspectRatio: aspectRatio,
-                    ),
-                ],
-              ),
-            ),
+            isBuffering: isBuffering,
           ),
         VideoPlayerUnsupported() => VideoPlayerErrorContainer(
           title: context.t.video_player.engine_not_supported,
@@ -517,24 +541,10 @@ class _BooruVideoState extends ConsumerState<BooruVideo> {
           :final thumbnailUrl,
           :final aspectRatio,
         ) =>
-          KurumiHero(
-            tag: widget.heroTag,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Flexible(
-                  child: Consumer(
-                    builder: (_, ref, _) => BooruImage(
-                      config: ref.watchConfigAuth,
-                      borderRadius: BorderRadius.zero,
-                      aspectRatio: aspectRatio,
-                      imageUrl: thumbnailUrl,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          _buildMedia(
+            player: null,
+            thumbnailUrl: thumbnailUrl,
+            aspectRatio: aspectRatio,
           ),
         VideoPlayerLoading() => const KurumiHero(
           tag: null,

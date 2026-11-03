@@ -11,15 +11,14 @@ typedef DataFetcher<T> = Future<T> Function();
 bool _isHandshakeException(Object? error) {
   final errorStr = error.toString().toLowerCase();
   return errorStr.contains('handshake') ||
-      errorStr.contains('tlsv1_alert_no_application_protocol');
+      errorStr.contains('ssl_error') ||
+      errorStr.contains('err_ssl_') ||
+      errorStr.contains('tlsv1_alert');
 }
 
 bool _isCertificateException(Object? error) {
   final errorStr = error.toString().toLowerCase();
-  return errorStr.contains('certificate') ||
-      errorStr.contains('cert_') ||
-      errorStr.contains('ssl_error') ||
-      errorStr.contains('tlsv1_alert');
+  return errorStr.contains('certificate') || errorStr.contains('cert_');
 }
 
 TaskEither<BooruError, T> tryFetchRemoteData<T>({
@@ -29,11 +28,19 @@ TaskEither<BooruError, T> tryFetchRemoteData<T>({
   (error, stackTrace) => switch (error) {
     DioException(:final response?) => ServerError(
       httpStatusCode: response.statusCode,
+      code: switch (response.data) {
+        {'code': final String code} => code,
+        _ => null,
+      },
       message: switch (response.data) {
         final String s => s,
         {'message': final String s} => s,
         final other => '$other',
       },
+    ),
+    AuthenticationFailure(:final message) => ServerError(
+      httpStatusCode: 401,
+      message: message,
     ),
     DioException(:final error?) when _isCertificateException(error) => AppError(
       type: AppErrorType.certificateError,

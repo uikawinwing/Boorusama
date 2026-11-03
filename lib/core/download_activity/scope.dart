@@ -3,6 +3,7 @@ import 'dart:async';
 
 // Package imports:
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:i18n/i18n.dart';
 import 'package:kurumi/material.dart';
 
 // Project imports:
@@ -17,6 +18,8 @@ import '../router.dart';
 import '../settings/providers.dart';
 import 'providers.dart';
 import 'types.dart';
+
+const _queuedToastDelay = Duration(seconds: 1);
 
 class DownloadActivityScope extends ConsumerStatefulWidget {
   const DownloadActivityScope({
@@ -37,6 +40,15 @@ class _DownloadActivityScopeState extends ConsumerState<DownloadActivityScope> {
   bool? _configuredNotifications;
   Future<void>? _permissionRequest;
   final _notificationUpdates = <String, Future<void>>{};
+  final _queuedToastTimers = <String, Timer>{};
+
+  @override
+  void dispose() {
+    for (final timer in _queuedToastTimers.values) {
+      timer.cancel();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -65,8 +77,19 @@ class _DownloadActivityScopeState extends ConsumerState<DownloadActivityScope> {
           final old = previousById[activity.id];
           if (old == activity) continue;
 
-          if (old == null && _startsSingleDownload(activity)) {
-            showDownloadStartToast(context);
+          if (_startsSingleDownload(old, activity)) {
+            showDownloadStartToast(
+              context,
+              message: activity.phase == DownloadActivityPhase.waitingForWifi
+                  ? context.t.download.status.waiting_for_wifi
+                  : null,
+            );
+          }
+
+          if (activity.kind == DownloadActivityKind.single &&
+              activity.phase == DownloadActivityPhase.queued &&
+              old == null) {
+            _scheduleQueuedToast(activity.id);
           }
 
           if (activity.kind == DownloadActivityKind.single &&
@@ -126,15 +149,43 @@ class _DownloadActivityScopeState extends ConsumerState<DownloadActivityScope> {
     return widget.child;
   }
 
-  bool _startsSingleDownload(DownloadActivity activity) {
+  void _scheduleQueuedToast(String id) {
+    _queuedToastTimers[id]?.cancel();
+    _queuedToastTimers[id] = Timer(_queuedToastDelay, () {
+      _queuedToastTimers.remove(id);
+      if (!mounted) return;
+
+      final stillQueued = ref
+          .read(downloadActivitiesProvider)
+          .any(
+            (activity) =>
+                activity.id == id &&
+                activity.phase == DownloadActivityPhase.queued,
+          );
+      if (stillQueued) {
+        showDownloadStartToast(
+          context,
+          message: context.t.download.notification.queued,
+        );
+      }
+    });
+  }
+
+  bool _startsSingleDownload(
+    DownloadActivity? previous,
+    DownloadActivity activity,
+  ) {
     if (activity.kind != DownloadActivityKind.single) return false;
 
     return switch (activity.phase) {
-      DownloadActivityPhase.queued || DownloadActivityPhase.running => true,
+      DownloadActivityPhase.waitingForWifi => previous == null,
+      DownloadActivityPhase.running =>
+        previous == null || previous.phase == DownloadActivityPhase.queued,
       DownloadActivityPhase.completed || DownloadActivityPhase.skipped =>
-        activity.completionSource == DownloadCompletionSource.cache ||
-            activity.completionSource ==
-                DownloadCompletionSource.alreadyPresent,
+        previous == null &&
+            (activity.completionSource == DownloadCompletionSource.cache ||
+                activity.completionSource ==
+                    DownloadCompletionSource.alreadyPresent),
       _ => false,
     };
   }
@@ -163,6 +214,7 @@ class _DownloadActivityScopeState extends ConsumerState<DownloadActivityScope> {
     DownloadNotifications notifications,
     DownloadActivity activity,
   ) async {
+    final isIOS = ref.read(appPlatformProvider).isIOS;
     if (activity.kind == DownloadActivityKind.single) {
       if (activity.phase == DownloadActivityPhase.completed &&
           activity.completionSource == DownloadCompletionSource.cache) {
@@ -191,7 +243,7 @@ class _DownloadActivityScopeState extends ConsumerState<DownloadActivityScope> {
         );
       case DownloadActivityPhase.running:
         final total = activity.totalItems;
-        if (!isIOS() && total != null && total > 0) {
+        if (!isIOS && total != null && total > 0) {
           await notifications.showBulkProgress(
             activity.id,
             activity.label,
@@ -212,6 +264,7 @@ class _DownloadActivityScopeState extends ConsumerState<DownloadActivityScope> {
           DownloadActivityPhase.suspended:
         await notifications.cancelBulk(activity.id);
       case DownloadActivityPhase.queued ||
+          DownloadActivityPhase.waitingForWifi ||
           DownloadActivityPhase.waitingToRetry ||
           DownloadActivityPhase.paused:
         break;

@@ -1,6 +1,9 @@
 // Dart imports:
 import 'dart:async';
 
+// Flutter imports:
+import 'package:flutter/widgets.dart';
+
 // Package imports:
 import 'package:cache_manager/cache_manager.dart';
 import 'package:collection/collection.dart';
@@ -13,11 +16,15 @@ import 'package:kurumi/kurumi.dart';
 // Project imports:
 import '../../../boorus/booru/types.dart';
 import '../../../boorus/engine/providers.dart';
+import '../../../configs/config/providers.dart';
 import '../../../configs/config/types.dart';
+import '../../../configs/network/providers.dart';
+import '../../../ddos/handler/providers.dart';
 import '../../../download_activity/activity.dart';
 import '../../../downloads/downloader/providers.dart';
 import '../../../downloads/downloader/types.dart';
 import '../../../downloads/filename/types.dart';
+import '../../../downloads/sidecar/types.dart';
 import '../../../http/client/providers.dart';
 import '../../../posts/post/providers.dart';
 import '../../../posts/post/types.dart';
@@ -47,6 +54,9 @@ final bookmarkUrlResolverProvider = Provider.autoDispose
     });
 
 class BookmarkNotifier extends AsyncNotifier<BookmarkState> {
+  BuildContext? get _navigationContext =>
+      ref.read(appNavigationProvider).navigatorKey.currentContext;
+
   ImageCacheManager? get _cacheManager =>
       ref.read(bookmarkImageCacheManagerProvider);
 
@@ -244,39 +254,76 @@ class BookmarkNotifier extends AsyncNotifier<BookmarkState> {
     }
   }
 
+  /// Each bookmark downloads with the profile of the site it came from, so it
+  /// lands in that profile's folder. [auth] and [download] cover bookmarks
+  /// whose site has no profile.
   Future<void> downloadBookmarks(
     BooruConfigAuth auth,
     BooruConfigDownload download,
     List<Bookmark> bookmarks,
   ) async {
     final settings = ref.read(settingsProvider);
+    final networkConstraint = await resolveDownloadNetworkConstraint(
+      ref,
+      settings.downloadNetworkPolicy,
+    );
+    if (networkConstraint == null) return;
+
     final downloader = ref.read(downloadServiceProvider);
-    final headers = ref.read(httpHeadersProvider(auth));
 
     final fileNameBuilder = fallbackFileNameBuilder;
 
     final tasks = bookmarks.map(
       (bookmark) async {
+        final (auth: bookmarkAuth, download: bookmarkDownload) = switch (ref
+            .read(
+              firstMatchingConfigBySourceUrlProvider((
+                bookmark.booruId,
+                bookmark.sourceUrl,
+              )),
+            )) {
+          final config? => (auth: config.auth, download: config.download),
+          null => (auth: auth, download: download),
+        };
+        final headers = ref.read(httpHeadersProvider(bookmarkAuth));
         final fileName = await fileNameBuilder.generate(
           settings,
-          download,
+          bookmarkDownload,
           bookmark.toPost(),
           downloadUrl: bookmark.originalUrl,
         );
 
+        final request = ref
+            .read(networkSettingsProvider(bookmarkAuth))
+            .resolveMedia(bookmark.originalUrl, headers: headers);
+        final bypassHeaders = request.overridden
+            ? await ref.read(bypassDdosHeadersProvider(request.url).future)
+            : const <String, String>{};
         final result = await downloader.download(
           DownloadOptions.fromSettings(
             settings,
-            config: download,
-            url: bookmark.originalUrl,
+            config: bookmarkDownload,
+            sidecar: settings.downloadSidecarFormat == SidecarFormat.off
+                ? null
+                : SidecarSnapshot(
+                    format: settings.downloadSidecarFormat,
+                    quality: DownloadQuality.original.name,
+                    tags: bookmark.tags,
+                    postId: bookmark.sitePostId,
+                    site: bookmark.sourceUrl,
+                    urls: [?bookmark.realSourceUrl],
+                  ),
+            url: request.url,
             metadata: DownloaderMetadata(
+              mediaHostOverridden: request.overridden,
               thumbnailUrl: bookmark.thumbnailUrl,
               fileSize: null,
               siteUrl: bookmark.sourceUrl,
               group: null,
             ),
             filename: fileName,
-            headers: headers,
+            headers: {...request.headers, ...bypassHeaders},
+            networkConstraint: networkConstraint,
           ),
         );
         return (
@@ -305,7 +352,7 @@ class BookmarkNotifier extends AsyncNotifier<BookmarkState> {
         .toList();
 
     if (failures.isNotEmpty) {
-      final context = navigatorKey.currentContext;
+      final context = _navigationContext;
 
       final uniqueErrors = failures
           .map((e) => e.error.getErrorMessage())
@@ -329,7 +376,7 @@ extension BookmarkCubitToastX on BookmarkNotifier {
     BooruConfigAuth config,
     Post post,
   ) async {
-    final context = navigatorKey.currentContext;
+    final context = _navigationContext;
 
     if (context == null || !context.mounted) {
       return;
@@ -350,7 +397,7 @@ extension BookmarkCubitToastX on BookmarkNotifier {
     String booruUrl,
     Iterable<Post> posts,
   ) async {
-    final context = navigatorKey.currentContext;
+    final context = _navigationContext;
 
     if (context == null || !context.mounted) {
       return;
@@ -372,7 +419,7 @@ extension BookmarkCubitToastX on BookmarkNotifier {
     BookmarkUniqueId bookmarkId, {
     void Function()? onSuccess,
   }) async {
-    final context = navigatorKey.currentContext;
+    final context = _navigationContext;
 
     if (context == null || !context.mounted) {
       return;
