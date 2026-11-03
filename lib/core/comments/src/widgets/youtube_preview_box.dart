@@ -12,6 +12,8 @@ import 'package:material_symbols_icons/symbols.dart';
 
 // Project imports:
 import '../../../../foundation/url_launcher.dart';
+import '../../../developer_options/blocked_media_placeholder.dart';
+import '../../../developer_options/providers.dart';
 import '../../../images/providers.dart';
 
 class YoutubePreviewBox extends ConsumerWidget {
@@ -24,6 +26,13 @@ class YoutubePreviewBox extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (!ref.watch(automaticMediaLoadingEnabledProvider)) {
+      return const BlockedMediaPlaceholder(
+        aspectRatio: 16 / 9,
+        isVideo: true,
+      );
+    }
+
     try {
       final dio = Dio();
       final cacheManager = ref.watch(defaultImageCacheManagerProvider);
@@ -47,7 +56,10 @@ class YoutubePreviewBox extends ConsumerWidget {
                       style: Kurumi.themeOf(context).textTheme.bodySmall,
                     ),
                     TextButton(
-                      onPressed: () => launchExternalUrl(uri),
+                      onPressed: () => launchExternalUrl(
+                        uri,
+                        launcher: ref.read(externalUrlLauncherProvider),
+                      ),
                       child: Text(
                         data.title,
                         style: Kurumi.themeOf(
@@ -82,7 +94,12 @@ class YoutubePreviewBox extends ConsumerWidget {
                                     color: Colors.black87,
                                   ),
                                   child: IconButton(
-                                    onPressed: () => launchExternalUrl(uri),
+                                    onPressed: () => launchExternalUrl(
+                                      uri,
+                                      launcher: ref.read(
+                                        externalUrlLauncherProvider,
+                                      ),
+                                    ),
                                     icon: const Icon(Symbols.play_arrow),
                                   ),
                                 ),

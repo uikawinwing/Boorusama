@@ -1,16 +1,70 @@
 dependency_overrides:
+  fvp:
+    git:
+      url: https://github.com/khoadng/fvp.git
+      ref: 4fa14a3181a27c934cc4c2298c6d891aff463ee5
+  video_player:
+    git:
+      url: https://github.com/khoadng/packages.git
+      ref: c32f6280eff5e9f0fe7c72a51fd74e7bb25d0bb5
+      path: packages/video_player/video_player
+  video_player_platform_interface:
+    git:
+      url: https://github.com/khoadng/packages.git
+      ref: c32f6280eff5e9f0fe7c72a51fd74e7bb25d0bb5
+      path: packages/video_player/video_player_platform_interface
+  video_player_android:
+    git:
+      url: https://github.com/khoadng/packages.git
+      ref: c32f6280eff5e9f0fe7c72a51fd74e7bb25d0bb5
+      path: packages/video_player/video_player_android
+  video_player_web:
+    git:
+      url: https://github.com/khoadng/packages.git
+      ref: c32f6280eff5e9f0fe7c72a51fd74e7bb25d0bb5
+      path: packages/video_player/video_player_web
   background_downloader:
     git:
       url: https://github.com/khoadng/background_downloader.git
-      ref: 12d081cbcad43fe8c70af38565e5cbc91ae50fb7
+      ref: 76d516e098a7c91462bdede1c726be81a7f1a4ab
   cronet_http: ^1.7.0
   flutter_riverpod:
     git:
       url: https://github.com/khoadng/riverpod.git
       path: packages/flutter_riverpod
       ref: 5a513c5aeee5a91d7cf5aa9a6e6a414b822bdee9
+  libavif:
+    git:
+      url: https://github.com/dartgfx/libavif.git
+      path: packages/libavif
+      ref: 0f286d670be82c32272b4c51cc3fc1672127cb9a
+  native_toolchain_rust:
+    git:
+      url: https://github.com/khoadng/native_toolchain_rust.git
+      path: native_toolchain_rust
+      ref: fca16906b7f3ea0668a650387f367153d35f896f
   riverpod:
     git:
       url: https://github.com/khoadng/riverpod.git
       path: packages/riverpod
       ref: 5a513c5aeee5a91d7cf5aa9a6e6a414b822bdee9
+  dio_http2_adapter:
+    git:
+      url: https://github.com/khoadng/dio.git
+      path: plugins/http2_adapter
+      ref: c3a4abb882ac0344e6e96c4dc84687eac0276241
+  http2:
+    git:
+      url: https://github.com/khoadng/http.git
+      path: pkgs/http2
+      ref: 852f8ecf461c2ac8df627b6ae78a8ec5bf60d94a
+  anchor_ui:
+    git:
+      url: https://github.com/khoadng/anchor.git
+      path: packages/anchor_ui
+      ref: b0aa8ab57094c1a1d8fa368b11da690b409b7824
+  flutter_anchor:
+    git:
+      url: https://github.com/khoadng/anchor.git
+      path: packages/flutter_anchor
+      ref: b0aa8ab57094c1a1d8fa368b11da690b409b7824

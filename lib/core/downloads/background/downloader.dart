@@ -13,6 +13,8 @@ import '../../../foundation/loggers.dart';
 import '../../ddos/solver/types.dart';
 import '../downloader/types.dart';
 import '../path/types.dart';
+import '../sidecar/data.dart';
+import '../sidecar/types.dart';
 import 'file_downloader_ex.dart';
 
 class BackgroundDownloader implements DownloadService {
@@ -21,12 +23,14 @@ class BackgroundDownloader implements DownloadService {
     this.androidSdkInt,
     this.logger,
     required this.fs,
+    required this.sidecarStore,
   });
 
   final VideoCacheManager? videoCacheManager;
   final int? androidSdkInt;
   final Logger? logger;
   final AppFileSystem fs;
+  final Future<SidecarStore> sidecarStore;
 
   @override
   Future<DownloadResult> download(DownloadOptions options) async {
@@ -112,16 +116,7 @@ class BackgroundDownloader implements DownloadService {
     required DownloadOptions options,
   }) async {
     try {
-      final cacheResult = await _tryDownloadFromCache(
-        targetDir: targetDir,
-        options: options,
-      );
-
-      if (cacheResult case final result?) {
-        return result;
-      }
-
-      final task = DownloadTask(
+      var task = DownloadTask(
         url: options.url,
         filename: _sanitizeFilename(
           options.filename,
@@ -134,17 +129,66 @@ class BackgroundDownloader implements DownloadService {
         metaData: options.metadata?.toJsonString() ?? '',
         headers: options.headers,
         group: options.metadata?.group ?? FileDownloader.defaultGroup,
+        requiresWiFi: options.networkConstraint.requiresWiFi,
       );
+
+      SidecarStore? sidecars;
+      var metadataSkipped = false;
+      if (options.sidecar case final snapshot?) {
+        final path = await task.filePath();
+        if ((options.skipIfExists ?? false) && fs.fileExistsSync(path)) {
+          return DownloadSkipped(DownloadTaskInfo(path: path, id: task.taskId));
+        }
+        sidecars = await _prepareSidecar(task.taskId, path, snapshot);
+        if (sidecars == null) {
+          metadataSkipped = true;
+        } else {
+          task = task.copyWith(
+            metaData: DownloaderMetadata.fromJson({
+              ...?options.metadata?.toJson(),
+              'sidecarId': task.taskId,
+            }).toJsonString(),
+            options: TaskOptions(onTaskFinished: onBackgroundSidecarFinished),
+          );
+        }
+      }
+
+      final cacheResult = await _tryDownloadFromCache(
+        targetDir: targetDir,
+        options: options,
+      );
+      if (cacheResult case final result?) {
+        if (sidecars != null) {
+          if (result case DownloadCompleted(:final info)) {
+            try {
+              await sidecars.complete(task.taskId, info.path);
+            } catch (error) {
+              logger?.error(
+                'BackgroundDownloader',
+                'Metadata finalization failed: ${error.runtimeType}',
+                sensitiveMessage: error.toString(),
+              );
+            }
+          } else {
+            await sidecars.discard(task.taskId);
+          }
+        }
+        return metadataSkipped ? result.withMetadataSkipped() : result;
+      }
 
       _log(
         'Starting download: ${options.url} to $targetDir/${options.filename}',
       );
 
-      return FileDownloader().enqueueIfNeeded(
+      final result = await FileDownloader().enqueueIfNeeded(
         task,
         skipIfExists: options.skipIfExists,
         fs: fs,
       );
+      if (sidecars != null && result is! DownloadEnqueued) {
+        await sidecars.discard(task.taskId);
+      }
+      return metadataSkipped ? result.withMetadataSkipped() : result;
     } on FileSystemException catch (e) {
       return DownloadFailure(
         FileSystemDownloadError(
@@ -271,6 +315,27 @@ class BackgroundDownloader implements DownloadService {
       ),
       source: DownloadCompletionSource.cache,
     );
+  }
+
+  /// Shared media folders such as Android's Pictures only accept media files,
+  /// so a destination that rejects the metadata file still gets the media.
+  Future<SidecarStore?> _prepareSidecar(
+    String taskId,
+    String path,
+    SidecarSnapshot snapshot,
+  ) async {
+    final sidecars = await sidecarStore;
+    try {
+      await sidecars.prepare(taskId, path, snapshot);
+      return sidecars;
+    } on FileSystemException catch (error) {
+      logger?.warn(
+        'BackgroundDownloader',
+        'Metadata file not allowed at destination: ${error.osError?.errorCode}',
+        sensitiveMessage: error.toString(),
+      );
+      return null;
+    }
   }
 
   void _log(String message) {

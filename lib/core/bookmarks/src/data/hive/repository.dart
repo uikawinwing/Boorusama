@@ -15,6 +15,8 @@ class BookmarkHiveRepository implements BookmarkRepository {
 
   final Box<BookmarkHiveObject> _box;
 
+  Future<void> close() => _box.close();
+
   @override
   Future<Bookmark> addBookmark(
     int booruId,
@@ -27,6 +29,7 @@ class BookmarkHiveRepository implements BookmarkRepository {
     final favoriteHiveObject = BookmarkHiveObject(
       booruId: booruId,
       postId: post.id,
+      sitePostId: post.sitePostId,
       createdAt: now,
       updatedAt: now,
       thumbnailUrl: post.thumbnailImageUrl,

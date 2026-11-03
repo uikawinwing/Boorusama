@@ -1,4 +1,6 @@
 import java.util.Properties
+import com.android.build.api.dsl.ApplicationExtension
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -22,11 +24,21 @@ val hasValidKeystore = keystorePropertiesFile.exists() &&
     keystoreProperties["storeFile"] != null && 
     file(keystoreProperties["storeFile"] as String).exists()
 val splitPerAbi = project.findProperty("split-per-abi") == "true"
+val compileSdkVersion = providers.gradleProperty("boorusama.android.compileSdk").get().toInt()
+val targetSdkVersion = providers.gradleProperty("boorusama.android.targetSdk").get().toInt()
+val minSdkVersion = providers.gradleProperty("boorusama.android.minSdk").get().toInt()
+val androidBuildToolsVersion = providers.gradleProperty("boorusama.android.buildTools").get()
+val ndkVersionName = providers.gradleProperty("boorusama.android.ndk").get()
 
-android {
+extensions.configure<ApplicationExtension> {
     namespace = "com.degenk.boorusama"
-    compileSdk = 36
-    ndkVersion = "28.2.13676358"
+    compileSdk = compileSdkVersion
+    buildToolsVersion = androidBuildToolsVersion
+    ndkVersion = ndkVersionName
+
+    buildFeatures {
+        resValues = true
+    }
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
@@ -34,14 +46,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
-    }
-
     defaultConfig {
         applicationId = "com.degenk.boorusama"
-        minSdk = 24
-        targetSdk = 36
+        minSdk = minSdkVersion
+        targetSdk = targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
@@ -84,6 +92,12 @@ android {
             dimension = "boorusama"
             resValue("string", "app_name", "Boorusama")
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
     }
 }
 

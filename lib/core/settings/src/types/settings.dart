@@ -13,6 +13,7 @@ import '../../../analytics/types.dart';
 import '../../../backups/auto/types.dart';
 import '../../../configs/gesture/types.dart';
 import '../../../downloads/downloader/types.dart';
+import '../../../downloads/sidecar/types.dart';
 import '../../../haptics/types.dart';
 import '../../../home/types.dart';
 import '../../../images/types.dart';
@@ -44,6 +45,8 @@ class Settings extends Equatable {
     required this.enableDynamicColoring,
     required this.clearImageCacheOnStartup,
     required this.appLockType,
+    required this.appLockTimeoutSeconds,
+    required this.hideAppPreviewWhenBackgrounded,
     required this.bookmarkFilterType,
     required this.booruConfigSelectorPosition,
     required this.booruConfigSelectorScrollDirection,
@@ -52,6 +55,8 @@ class Settings extends Equatable {
     required this.reduceAnimations,
     required this.downloadFileExistedBehavior,
     required this.downloadNotificationsEnabled,
+    required this.downloadNetworkPolicy,
+    this.downloadSidecarFormat = SidecarFormat.off,
     required this.colors,
     required this.volumeKeyViewerNavigation,
     required this.searchBarScrollBehavior,
@@ -88,6 +93,9 @@ class Settings extends Equatable {
       enableDynamicColoring = json['enableDynamicColoring'] ?? false,
       clearImageCacheOnStartup = json['clearImageCacheOnStartup'] ?? false,
       appLockType = AppLockType.parse(json['appLockType']),
+      appLockTimeoutSeconds = json['appLockTimeoutSeconds'] ?? 30,
+      hideAppPreviewWhenBackgrounded =
+          json['hideAppPreviewWhenBackgrounded'] ?? false,
       bookmarkFilterType = BookmarkFilterType.parse(json['bookmarkFilterType']),
       booruConfigSelectorPosition = BooruConfigSelectorPosition.parse(
         json['booruConfigSelectorPosition'],
@@ -103,6 +111,12 @@ class Settings extends Equatable {
       ),
       downloadNotificationsEnabled =
           json['downloadNotificationsEnabled'] as bool? ?? true,
+      downloadSidecarFormat = SidecarFormat.parse(
+        json['downloadSidecarFormat'],
+      ),
+      downloadNetworkPolicy = DownloadNetworkPolicy.parse(
+        json['downloadNetworkPolicy'],
+      ),
       colors = json['colors'] != null
           ? ColorSettings.fromJson(json['colors'])
           : null,
@@ -171,6 +185,8 @@ class Settings extends Equatable {
     enableDynamicColoring: false,
     clearImageCacheOnStartup: false,
     appLockType: AppLockType.defaultValue,
+    appLockTimeoutSeconds: 30,
+    hideAppPreviewWhenBackgrounded: false,
     bookmarkFilterType: BookmarkFilterType.defaultValue,
     booruConfigSelectorPosition: BooruConfigSelectorPosition.defaultValue,
     booruConfigSelectorScrollDirection: BooruConfigScrollDirection.defaultValue,
@@ -179,6 +195,7 @@ class Settings extends Equatable {
     reduceAnimations: false,
     downloadFileExistedBehavior: DownloadFileExistedBehavior.defaultValue,
     downloadNotificationsEnabled: true,
+    downloadNetworkPolicy: DownloadNetworkPolicy.defaultValue,
     volumeKeyViewerNavigation: false,
     searchBarScrollBehavior: SearchBarScrollBehavior.defaultValue,
     searchBarPosition: SearchBarPosition.defaultValue,
@@ -217,6 +234,10 @@ class Settings extends Equatable {
 
   final AppLockType appLockType;
 
+  final int appLockTimeoutSeconds;
+
+  final bool hideAppPreviewWhenBackgrounded;
+
   final BookmarkFilterType bookmarkFilterType;
 
   final BooruConfigSelectorPosition booruConfigSelectorPosition;
@@ -232,6 +253,9 @@ class Settings extends Equatable {
   final DownloadFileExistedBehavior downloadFileExistedBehavior;
 
   final bool downloadNotificationsEnabled;
+  final SidecarFormat downloadSidecarFormat;
+
+  final DownloadNetworkPolicy downloadNetworkPolicy;
 
   final ColorSettings? colors;
 
@@ -263,6 +287,8 @@ class Settings extends Equatable {
     bool? enableDynamicColoring,
     bool? clearImageCacheOnStartup,
     AppLockType? appLockType,
+    int? appLockTimeoutSeconds,
+    bool? hideAppPreviewWhenBackgrounded,
     BookmarkFilterType? bookmarkFilterType,
     PostGestureConfig? postGestures,
     BooruConfigSelectorPosition? booruConfigSelectorPosition,
@@ -272,6 +298,8 @@ class Settings extends Equatable {
     bool? reduceAnimations,
     DownloadFileExistedBehavior? downloadFileExistedBehavior,
     bool? downloadNotificationsEnabled,
+    DownloadNetworkPolicy? downloadNetworkPolicy,
+    SidecarFormat? downloadSidecarFormat,
     ImageListingSettings? listing,
     ImageViewerSettings? viewer,
     ColorSettings? colors,
@@ -302,6 +330,9 @@ class Settings extends Equatable {
     clearImageCacheOnStartup:
         clearImageCacheOnStartup ?? this.clearImageCacheOnStartup,
     appLockType: appLockType ?? this.appLockType,
+    appLockTimeoutSeconds: appLockTimeoutSeconds ?? this.appLockTimeoutSeconds,
+    hideAppPreviewWhenBackgrounded:
+        hideAppPreviewWhenBackgrounded ?? this.hideAppPreviewWhenBackgrounded,
     bookmarkFilterType: bookmarkFilterType ?? this.bookmarkFilterType,
     booruConfigSelectorPosition:
         booruConfigSelectorPosition ?? this.booruConfigSelectorPosition,
@@ -318,6 +349,8 @@ class Settings extends Equatable {
         downloadFileExistedBehavior ?? this.downloadFileExistedBehavior,
     downloadNotificationsEnabled:
         downloadNotificationsEnabled ?? this.downloadNotificationsEnabled,
+    downloadNetworkPolicy: downloadNetworkPolicy ?? this.downloadNetworkPolicy,
+    downloadSidecarFormat: downloadSidecarFormat ?? this.downloadSidecarFormat,
     colors: colors ?? this.colors,
     volumeKeyViewerNavigation:
         volumeKeyViewerNavigation ?? this.volumeKeyViewerNavigation,
@@ -351,6 +384,8 @@ class Settings extends Equatable {
       'enableDynamicColoring': enableDynamicColoring,
       'clearImageCacheOnStartup': clearImageCacheOnStartup,
       'appLockType': appLockType.toData(),
+      'appLockTimeoutSeconds': appLockTimeoutSeconds,
+      'hideAppPreviewWhenBackgrounded': hideAppPreviewWhenBackgrounded,
       'bookmarkFilterType': bookmarkFilterType.toData(),
       'booruConfigSelectorPosition': booruConfigSelectorPosition.toData(),
       'booruConfigSelectorScrollDirection': booruConfigSelectorScrollDirection
@@ -360,6 +395,8 @@ class Settings extends Equatable {
       'reduceAnimations': reduceAnimations,
       'downloadFileExistedBehavior': downloadFileExistedBehavior.toData(),
       'downloadNotificationsEnabled': downloadNotificationsEnabled,
+      'downloadNetworkPolicy': downloadNetworkPolicy.toData(),
+      'downloadSidecarFormat': downloadSidecarFormat.name,
       'colors': colors?.toJson(),
       'volumeKeyViewerNavigation': volumeKeyViewerNavigation,
       'searchBarScrollBehavior': searchBarScrollBehavior.toData(),
@@ -389,6 +426,8 @@ class Settings extends Equatable {
     enableDynamicColoring,
     clearImageCacheOnStartup,
     appLockType,
+    appLockTimeoutSeconds,
+    hideAppPreviewWhenBackgrounded,
     bookmarkFilterType,
     booruConfigSelectorPosition,
     booruConfigSelectorScrollDirection,
@@ -397,6 +436,8 @@ class Settings extends Equatable {
     reduceAnimations,
     downloadFileExistedBehavior,
     downloadNotificationsEnabled,
+    downloadNetworkPolicy,
+    downloadSidecarFormat,
     colors,
     volumeKeyViewerNavigation,
     searchBarScrollBehavior,

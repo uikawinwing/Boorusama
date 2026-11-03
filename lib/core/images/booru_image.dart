@@ -10,6 +10,9 @@ import 'package:kurumi/material.dart';
 // Project imports:
 import '../../foundation/info/device_info.dart';
 import '../configs/config/types.dart';
+import '../configs/network/providers.dart';
+import '../developer_options/blocked_media_placeholder.dart';
+import '../developer_options/providers.dart';
 import '../http/client/providers.dart';
 import '../settings/providers.dart';
 import 'image_quality.dart';
@@ -35,6 +38,7 @@ class BooruImage extends ConsumerWidget {
     this.forceFill = false,
     this.forceLoadPlaceholder = false,
     this.hideMismatchedPlaceholder = false,
+    this.decodeAtLayoutSize = false,
     this.placeholderWidget,
     this.controller,
     this.imageCacheManager,
@@ -54,13 +58,32 @@ class BooruImage extends ConsumerWidget {
   final bool forceFill;
   final bool forceLoadPlaceholder;
   final bool hideMismatchedPlaceholder;
+  final bool decodeAtLayoutSize;
   final Widget? placeholderWidget;
   final ExtendedImageController? controller;
   final ImageCacheManager? imageCacheManager;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final automaticMediaLoadingEnabled = ref.watch(
+      automaticMediaLoadingEnabledProvider,
+    );
+
+    if (!automaticMediaLoadingEnabled) {
+      return BlockedMediaPlaceholder(
+        aspectRatio: forceCover || fit == BoxFit.contain ? null : aspectRatio,
+        borderRadius: borderRadius ?? _defaultRadius,
+      );
+    }
+
     final dio = ref.watch(dioForWidgetProvider(config));
+    final network = ref.watch(networkSettingsProvider(config));
+    final headers = ref.watch(httpHeadersProvider(config));
+    final imageRequest = network.resolveMedia(imageUrl, headers: headers);
+    final placeholderRequest = network.resolveMedia(
+      placeholderUrl ?? '',
+      headers: headers,
+    );
     final imageQualitySettings = ref.watch(
       imageListingSettingsProvider.select((value) => value.imageQuality),
     );
@@ -75,9 +98,15 @@ class BooruImage extends ConsumerWidget {
     );
 
     return BooruRawImage(
-      dio: dio,
-      imageUrl: imageUrl,
-      placeholderUrl: placeholderUrl,
+      dio: imageRequest.overridden
+          ? ref.watch(mediaOverrideDioProvider(config))
+          : dio,
+      imageUrl: imageRequest.url,
+      placeholderUrl: placeholderUrl == null ? null : placeholderRequest.url,
+      placeholderDio: placeholderRequest.overridden
+          ? ref.watch(mediaOverrideDioProvider(config))
+          : dio,
+      placeholderHeaders: placeholderRequest.headers,
       placeholderAspectRatio: placeholderAspectRatio,
       placeholderFit: placeholderFit,
       borderRadius: borderRadius,
@@ -90,7 +119,8 @@ class BooruImage extends ConsumerWidget {
       isLargeImage: imageQualitySettings != ImageQuality.low,
       forceLoadPlaceholder: forceLoadPlaceholder,
       hideMismatchedPlaceholder: hideMismatchedPlaceholder,
-      headers: ref.watch(httpHeadersProvider(config)),
+      decodeAtLayoutSize: decodeAtLayoutSize,
+      headers: imageRequest.headers,
       placeholderWidget: placeholderWidget,
       controller: controller,
       androidVersion: deviceInfo.androidDeviceInfo?.version.sdkInt,
@@ -105,6 +135,8 @@ class BooruRawImage extends StatelessWidget {
     required this.imageUrl,
     super.key,
     this.placeholderUrl,
+    this.placeholderDio,
+    this.placeholderHeaders,
     this.placeholderAspectRatio,
     this.placeholderFit,
     this.borderRadius,
@@ -118,6 +150,7 @@ class BooruRawImage extends StatelessWidget {
     this.isLargeImage = false,
     this.forceLoadPlaceholder = false,
     this.hideMismatchedPlaceholder = false,
+    this.decodeAtLayoutSize = false,
     this.gaplessPlayback = false,
     this.placeholderWidget,
     this.controller,
@@ -126,6 +159,8 @@ class BooruRawImage extends StatelessWidget {
   });
 
   final Dio dio;
+  final Dio? placeholderDio;
+  final Map<String, String>? placeholderHeaders;
   final String imageUrl;
   final String? placeholderUrl;
   final double? placeholderAspectRatio;
@@ -141,6 +176,7 @@ class BooruRawImage extends StatelessWidget {
   final bool isLargeImage;
   final bool forceLoadPlaceholder;
   final bool hideMismatchedPlaceholder;
+  final bool decodeAtLayoutSize;
   final bool gaplessPlayback;
   final Widget? placeholderWidget;
   final ExtendedImageController? controller;
@@ -174,6 +210,16 @@ class BooruRawImage extends StatelessWidget {
                   ? BoxFit.cover
                   : BoxFit.contain);
           final borderRadius = this.borderRadius ?? _defaultRadius;
+          final decodeSize = switch (decodeAtLayoutSize) {
+            true => layoutDecodeSize(
+              layout: Size(width, height),
+              pixelRatio: MediaQuery.devicePixelRatioOf(context),
+              fit: fit,
+              imageWidth: imageWidth,
+              imageHeight: imageHeight,
+            ),
+            false => null,
+          };
 
           return imageUrl.isNotEmpty
               ? ExtendedImage.network(
@@ -183,6 +229,8 @@ class BooruRawImage extends StatelessWidget {
                   borderRadius: borderRadius,
                   width: width,
                   height: height,
+                  cacheWidth: decodeSize?.width,
+                  cacheHeight: decodeSize?.height,
                   fit: fit,
                   gaplessPlayback: gaplessPlayback,
                   fetchStrategy: _fetchStrategy,
@@ -215,8 +263,8 @@ class BooruRawImage extends StatelessWidget {
                                 ? _wrapPlaceholderAspectRatio(
                                     ExtendedImage.network(
                                       url,
-                                      dio: dio,
-                                      headers: headers,
+                                      dio: placeholderDio ?? dio,
+                                      headers: placeholderHeaders ?? headers,
                                       borderRadius: borderRadius,
                                       width: placeholderAspectRatio == null
                                           ? width
@@ -290,6 +338,33 @@ bool _shouldLoadPlaceholderUrl({
   if (placeholder == imageUrl) return false;
 
   return true;
+}
+
+/// Decodes only the side that limits how the image fills [layout], so the
+/// other side keeps its aspect ratio and is never blurrier than the screen.
+({int? width, int? height})? layoutDecodeSize({
+  required Size layout,
+  required double pixelRatio,
+  required BoxFit fit,
+  double? imageWidth,
+  double? imageHeight,
+}) {
+  if (!layout.isFinite || layout.isEmpty) return null;
+
+  final imageIsWider = switch ((imageWidth, imageHeight)) {
+    (final w?, final h?) when w > 0 && h > 0 => w / h > layout.aspectRatio,
+    _ => false,
+  };
+  final constrainWidth = switch (fit) {
+    BoxFit.cover => !imageIsWider,
+    _ => imageIsWider,
+  };
+  final width = (layout.width * pixelRatio).ceil();
+  final height = (layout.height * pixelRatio).ceil();
+
+  return constrainWidth
+      ? (width: width, height: null)
+      : (width: null, height: height);
 }
 
 bool _shouldForceFill(

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../../core/configs/config/providers.dart';
 import '../../../../../core/router.dart';
 import '../../../../../foundation/url_launcher.dart';
+import '../types/utils.dart';
 
 void goToDanbooruWikiPage(WidgetRef ref, String wikiPageName) {
   if (wikiPageName.isEmpty) return;
@@ -18,6 +19,18 @@ void goToDanbooruWikiPage(WidgetRef ref, String wikiPageName) {
         wikiPageName,
       ],
     ).toString(),
+  );
+}
+
+Future<bool> openDanbooruWikiPageInBrowser(
+  WidgetRef ref,
+  String wikiPageName,
+) {
+  final config = ref.readConfigAuth;
+  return launchWikiPage(
+    config.url,
+    wikiPageName,
+    launcher: ref.read(externalUrlLauncherProvider),
   );
 }
 
@@ -40,5 +53,8 @@ void openDanbooruWikiLink(WidgetRef ref, String? url) {
   final resolvedUri = !uri.hasScheme && baseUri != null
       ? baseUri.resolveUri(uri)
       : uri;
-  launchExternalUrl(resolvedUri);
+  launchExternalUrl(
+    resolvedUri,
+    launcher: ref.read(externalUrlLauncherProvider),
+  );
 }

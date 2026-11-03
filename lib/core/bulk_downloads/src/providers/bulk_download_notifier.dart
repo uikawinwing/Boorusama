@@ -12,11 +12,14 @@ import '../../../../foundation/permissions.dart';
 import '../../../../foundation/utils/duration_utils.dart';
 import '../../../analytics/providers.dart';
 import '../../../configs/config/providers.dart';
+import '../../../configs/config/types.dart';
+import '../../../ddos/handler/providers.dart';
 import '../../../download_manager/providers.dart';
 import '../../../downloads/downloader/providers.dart';
 import '../../../downloads/downloader/types.dart' as d;
 import '../../../posts/sources/types.dart';
 import '../../../premiums/providers.dart';
+import '../../../settings/providers.dart';
 import '../data/filesystem.dart';
 import '../data/providers.dart';
 import '../types/bulk_download_error.dart';
@@ -74,6 +77,12 @@ extension SessionActionX on BulkDownloadSession {
 }
 
 class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
+  final _completionChecks = <String, Future<void>>{};
+  Future<d.DownloadNetworkConstraint?> _resolveNetworkConstraint() {
+    final policy = ref.read(settingsProvider).downloadNetworkPolicy;
+    return resolveDownloadNetworkConstraint(ref, policy);
+  }
+
   CancelToken _createSessionToken(String sessionId) {
     return ref
         .read(sessionCancellationProvider.notifier)
@@ -98,7 +107,6 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
 
   @override
   BulkDownloadState build() {
-    final completionTimers = <String, Timer>{};
     final progressUpdateTimers = <String, Timer>{};
 
     final progressNotifier = ref.watch(bulkDownloadProgressProvider.notifier);
@@ -132,18 +140,6 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
       );
     }
 
-    void scheduleCompletionCheck(String sessionId) {
-      completionTimers[sessionId]?.cancel();
-
-      completionTimers[sessionId] = Timer(
-        const Duration(milliseconds: 100),
-        () {
-          tryCompleteSession(sessionId);
-          completionTimers.remove(sessionId);
-        },
-      );
-    }
-
     ref
       ..listen(
         downloadTaskStreamProvider,
@@ -155,38 +151,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
               }
 
               if (event is TaskStatusUpdate) {
-                if (event.status == TaskStatus.complete) {
-                  ref
-                      .read(taskFileSizeResolverProvider(event.task).future)
-                      .then(
-                        (fileSize) {
-                          updateRecordFromTaskStream(
-                            event.task.group,
-                            event.task.taskId,
-                            DownloadRecordStatus.completed,
-                            fileSize: fileSize,
-                          );
-                        },
-                      );
-
-                  scheduleCompletionCheck(event.task.group);
-                }
-
-                updateRecordFromTaskStream(
-                  event.task.group,
-                  event.task.taskId,
-                  switch (event.status) {
-                    TaskStatus.enqueued => DownloadRecordStatus.pending,
-                    TaskStatus.running => DownloadRecordStatus.downloading,
-                    TaskStatus.complete => DownloadRecordStatus.completed,
-                    TaskStatus.notFound => DownloadRecordStatus.failed,
-                    TaskStatus.failed => DownloadRecordStatus.failed,
-                    TaskStatus.canceled => DownloadRecordStatus.cancelled,
-                    TaskStatus.waitingToRetry =>
-                      DownloadRecordStatus.downloading,
-                    TaskStatus.paused => DownloadRecordStatus.paused,
-                  },
-                );
+                unawaited(_applyTaskStatusUpdate(event));
               } else if (event is TaskProgressUpdate) {
                 scheduleProgressUpdate(event.task.group);
               }
@@ -195,10 +160,6 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         },
       )
       ..onDispose(() {
-        for (final timer in completionTimers.values) {
-          timer.cancel();
-        }
-
         for (final timer in progressUpdateTimers.values) {
           timer.cancel();
         }
@@ -208,6 +169,51 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
 
     _loadTasks(init: true);
     return const BulkDownloadState();
+  }
+
+  Future<void> _applyTaskStatusUpdate(TaskStatusUpdate event) async {
+    final logger = ref.read(loggerProvider);
+    try {
+      int? fileSize;
+      if (event.status == TaskStatus.complete) {
+        try {
+          fileSize = await ref.read(
+            taskFileSizeResolverProvider(event.task).future,
+          );
+        } catch (error) {
+          logger.warn(
+            _serviceName,
+            'Could not read completed download size: ${error.runtimeType}',
+            sensitiveMessage: error.toString(),
+          );
+        }
+      }
+      await updateRecordFromTaskStream(
+        event.task.group,
+        event.task.taskId,
+        switch (event.status) {
+          TaskStatus.enqueued => DownloadRecordStatus.pending,
+          TaskStatus.running ||
+          TaskStatus.waitingToRetry => DownloadRecordStatus.downloading,
+          TaskStatus.complete => DownloadRecordStatus.completed,
+          TaskStatus.notFound ||
+          TaskStatus.failed => DownloadRecordStatus.failed,
+          TaskStatus.canceled => DownloadRecordStatus.cancelled,
+          TaskStatus.paused => DownloadRecordStatus.paused,
+        },
+        fileSize: fileSize,
+      );
+      if (event.status == TaskStatus.complete) {
+        await tryCompleteSession(event.task.group);
+      }
+    } catch (error) {
+      logger.error(
+        _serviceName,
+        'Could not apply download status: ${error.runtimeType}',
+        sensitiveMessage: error.toString(),
+      );
+      state = state.copyWith(error: () => error);
+    }
   }
 
   Future<void> ensureIntegrity() async {
@@ -305,7 +311,10 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     }
 
     final task = await _withRepo((repo) => repo.createTask(options));
-    final _ = await _withRepo((repo) => repo.createSession(task, config));
+    final _ = await _withRepo(
+      (repo) =>
+          repo.createSession(_resolveSidecar(task, downloadConfigs), config),
+    );
     await _loadTasks();
 
     return;
@@ -315,6 +324,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     String sessionId, {
     DownloadConfigs? downloadConfigs,
   }) async {
+    final network = ref.readConfigNetwork;
     final session = await _withRepo((repo) => repo.getSession(sessionId));
 
     if (session == null) {
@@ -352,6 +362,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     await _startDownloadWithSession(
       task,
       session,
+      network: network,
       downloadConfigs: downloadConfigs,
     );
   }
@@ -359,6 +370,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
   Future<void> _startDownloadWithSession(
     DownloadTask task,
     DownloadSession session, {
+    required NetworkSettings network,
     DownloadConfigs? downloadConfigs,
   }) async {
     final path = task.path;
@@ -418,6 +430,9 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         return;
       }
     }
+
+    final networkConstraint = await _resolveNetworkConstraint();
+    if (networkConstraint == null) return;
 
     ref.read(analyticsProvider).whenData((analytics) {
       analytics?.logEvent(
@@ -528,9 +543,11 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
       await _downloadSessionPages(
         sessionId: sessionId,
         task: task,
+        network: network,
         startPage: 1,
         endPage: dryRunState.totalPages,
         downloadConfigs: downloadConfigs,
+        networkConstraint: networkConstraint,
       );
     } catch (e) {
       _cancelSessionToken(sessionId);
@@ -628,6 +645,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     String sessionId, {
     DownloadConfigs? downloadConfigs,
   }) async {
+    final network = ref.readConfigNetwork;
     try {
       final hasPremium = ref.read(hasPremiumProvider);
       if (!hasPremium) {
@@ -691,6 +709,9 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         return;
       }
 
+      final networkConstraint = await _resolveNetworkConstraint();
+      if (networkConstraint == null) return;
+
       await _updateSession(
         sessionId,
         status: DownloadSessionStatus.running,
@@ -700,8 +721,10 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         sessionId: sessionId,
         task: task,
         startPage: page,
+        network: network,
         endPage: totalPages,
         downloadConfigs: downloadConfigs,
+        networkConstraint: networkConstraint,
       );
     } catch (e) {
       state = state.copyWith(error: () => e);
@@ -712,6 +735,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     String sessionId, {
     DownloadConfigs? downloadConfigs,
   }) async {
+    final network = ref.readConfigNetwork;
     try {
       final currentSession = await _withRepo(
         (repo) => repo.getSession(sessionId),
@@ -783,6 +807,9 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         return;
       }
 
+      final networkConstraint = await _resolveNetworkConstraint();
+      if (networkConstraint == null) return;
+
       // Handle data race that causes page equal to totalPages but not all records are completed
       if (totalPages == page && completedCount < totalRecords) {
         await _updateSession(
@@ -803,8 +830,10 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         sessionId: sessionId,
         task: task,
         startPage: page,
+        network: network,
         endPage: totalPages,
         downloadConfigs: downloadConfigs,
+        networkConstraint: networkConstraint,
       );
     } catch (e) {
       state = state.copyWith(error: () => e);
@@ -855,13 +884,16 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     DownloadConfigs? downloadConfigs,
   }) async {
     final config = ref.readConfigAuth;
+    final network = ref.readConfigNetwork;
+    final resolvedTask = _resolveSidecar(task, downloadConfigs);
     final initialSession = await _withRepo(
-      (repo) => repo.createSession(task, config),
+      (repo) => repo.createSession(resolvedTask, config),
     );
 
     await _startDownloadWithSession(
-      task,
+      resolvedTask,
       initialSession,
+      network: network,
       downloadConfigs: downloadConfigs,
     );
   }
@@ -905,6 +937,14 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         error: () => e is BulkDownloadError ? e : Exception(e.toString()),
       );
     }
+  }
+
+  DownloadTask _resolveSidecar(DownloadTask task, DownloadConfigs? configs) {
+    final format =
+        task.sidecarFormat ??
+        configs?.settings?.downloadSidecarFormat ??
+        ref.read(settingsProvider).downloadSidecarFormat;
+    return task.copyWith(sidecarFormat: () => format);
   }
 
   Future<bool> deleteSession(String sessionId) async {
@@ -978,10 +1018,29 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     String sessionId, {
     RecordCountInfo? countInfo,
   }) async {
+    // Concurrent task completions must not finalize and clean up the same batch
+    // twice, or overwrite its statistics after its records have been removed.
+    while (_completionChecks.containsKey(sessionId)) {
+      await _completionChecks[sessionId];
+    }
+    final completion = Completer<void>();
+    _completionChecks[sessionId] = completion.future;
+    try {
+      await _tryCompleteSession(sessionId, countInfo: countInfo);
+    } finally {
+      unawaited(_completionChecks.remove(sessionId));
+      completion.complete();
+    }
+  }
+
+  Future<void> _tryCompleteSession(
+    String sessionId, {
+    RecordCountInfo? countInfo,
+  }) async {
     final progressNotifier = ref.read(bulkDownloadProgressProvider.notifier);
 
     var session = await _withRepo((repo) => repo.getSession(sessionId));
-    if (session == null) {
+    if (session == null || session.status == DownloadSessionStatus.completed) {
       return;
     }
 
@@ -1010,15 +1069,29 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
       return;
     }
 
+    // Capture before marking completed: another active-list refresh can then
+    // exclude this session while cleanup is still awaiting storage operations.
+    final finished = state.sessions
+        .where((value) => value.id == sessionId)
+        .firstOrNull;
     session = await _updateSession(
       sessionId,
       status: DownloadSessionStatus.completed,
     );
 
     // Calculate final statistics and cleanup
-    await _withRepo(
+    final stats = await _withRepo(
       (repo) => repo.updateStatisticsAndCleanup(sessionId),
     );
+
+    if (finished != null) {
+      state = state.copyWith(
+        completedSessions: [
+          finished.copyWith(session: session, stats: stats),
+          ...state.completedSessions.where((value) => value.id != sessionId),
+        ].take(100).toList(growable: false),
+      );
+    }
 
     // Clean up cancel token for completed session
     _cancelSessionToken(sessionId);
@@ -1242,11 +1315,13 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
   }
 
   Future<void> _downloadSessionPages({
+    required NetworkSettings network,
     required String sessionId,
     required DownloadTask task,
     required int startPage,
     required int endPage,
     required DownloadConfigs? downloadConfigs,
+    required d.DownloadNetworkConstraint networkConstraint,
   }) async {
     final fallbackDownloader = ref.read(downloadServiceProvider);
     final downloader = downloadConfigs?.downloader ?? fallbackDownloader;
@@ -1274,6 +1349,8 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         currentPage,
         downloader,
         downloadConfigs,
+        networkConstraint,
+        network,
       );
 
       final delay = downloadConfigs?.delayBetweenRequests;
@@ -1291,6 +1368,8 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
     int currentPage,
     d.DownloadService downloader,
     DownloadConfigs? downloadConfigs,
+    d.DownloadNetworkConstraint networkConstraint,
+    NetworkSettings network,
   ) async {
     final records = await _withRepo(
       (repo) => repo.getRecordsBySessionId(
@@ -1312,19 +1391,29 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
         break;
       }
 
+      final request = network.resolveMedia(
+        record.url,
+        headers: record.headers ?? const {},
+      );
+      final bypassHeaders = request.overridden
+          ? await ref.read(bypassDdosHeadersProvider(request.url).future)
+          : const <String, String>{};
       final result = await downloader.download(
         d.DownloadOptions(
-          url: record.url,
+          url: request.url,
           path: task.path,
           filename: record.fileName,
+          sidecar: record.sidecar,
           skipIfExists: false, // We already handled this in the dry run
-          headers: record.headers,
+          headers: {...request.headers, ...bypassHeaders},
           metadata: d.DownloaderMetadata(
+            mediaHostOverridden: request.overridden,
             thumbnailUrl: record.thumbnailImageUrl,
             fileSize: record.fileSize,
             siteUrl: PostSource.from(record.thumbnailImageUrl).url,
             group: sessionId,
           ),
+          networkConstraint: networkConstraint,
         ),
       );
 
@@ -1375,7 +1464,7 @@ class BulkDownloadNotifier extends Notifier<BulkDownloadState> {
   }) async {
     try {
       final task = await _withRepo((repo) => repo.createTask(options));
-      return createSavedTask(task, name: name);
+      return await createSavedTask(task, name: name);
     } catch (e) {
       state = state.copyWith(error: () => e);
       return null;

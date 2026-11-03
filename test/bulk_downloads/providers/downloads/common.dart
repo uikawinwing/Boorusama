@@ -38,9 +38,13 @@ import 'package:boorusama/core/search/queries/types.dart';
 import 'package:boorusama/core/search/selected_tags/types.dart';
 import 'package:boorusama/core/settings/providers.dart';
 import 'package:boorusama/core/settings/types.dart';
+import 'package:boorusama/foundation/filesystem.dart';
 import 'package:boorusama/foundation/info/device_info.dart';
 import 'package:boorusama/foundation/loggers.dart';
 import 'package:boorusama/foundation/permissions.dart';
+import 'package:boorusama/foundation/platform.dart';
+
+import '../../../support/boorusama_test_runtime.dart';
 import '../../common.dart';
 
 class MockMediaPermissionManager extends Mock
@@ -53,19 +57,23 @@ class DummyLogger implements Logger {
   String getDebugName() => 'Dummy Logger';
 
   @override
-  void error(String serviceName, String message) {}
+  void error(String serviceName, String message, {String? sensitiveMessage}) {}
 
   @override
-  void info(String serviceName, String message) {}
+  void info(String serviceName, String message, {String? sensitiveMessage}) {}
 
   @override
-  void warn(String serviceName, String message) {}
+  void warn(String serviceName, String message, {String? sensitiveMessage}) {}
 
   @override
-  void verbose(String serviceName, String message) {}
+  void verbose(
+    String serviceName,
+    String message, {
+    String? sensitiveMessage,
+  }) {}
 
   @override
-  void debug(String serviceName, String message) {}
+  void debug(String serviceName, String message, {String? sensitiveMessage}) {}
 }
 
 class DownloadTestConstants {
@@ -267,6 +275,7 @@ ProviderContainer createBulkDownloadContainer({
   DeviceInfo? deviceInfo,
   bool hasPremium = true,
   Stream<TaskUpdate>? taskUpdateStream,
+  Future<int> Function(Task task)? taskFileSizeResolver,
   BooruConfigAuth? overrideConfig,
 }) {
   final container = ProviderContainer(
@@ -277,6 +286,7 @@ ProviderContainer createBulkDownloadContainer({
       booruBuilder: booruBuilder,
       hasPremium: hasPremium,
       taskUpdateStream: taskUpdateStream,
+      taskFileSizeResolver: taskFileSizeResolver,
       overrideConfig: overrideConfig,
       deviceInfo: deviceInfo,
     ),
@@ -297,6 +307,7 @@ List<Override> getTestOverrides({
   DeviceInfo? deviceInfo,
   bool hasPremium = true,
   Stream<TaskUpdate>? taskUpdateStream,
+  Future<int> Function(Task task)? taskFileSizeResolver,
   BooruConfigAuth? overrideConfig,
 }) {
   return [
@@ -333,8 +344,12 @@ List<Override> getTestOverrides({
     downloadTaskStreamProvider.overrideWith(
       (_) => taskUpdateStream ?? emptyTaskUpdateStream,
     ),
-    taskFileSizeResolverProvider.overrideWith((_, _) => Future.value(0)),
+    taskFileSizeResolverProvider.overrideWith(
+      (_, task) => taskFileSizeResolver?.call(task) ?? Future.value(0),
+    ),
     deviceInfoProvider.overrideWithValue(deviceInfo ?? DeviceInfo.empty()),
+    appFileSystemProvider.overrideWithValue(MemoryAppFileSystem()),
+    appPlatformProvider.overrideWithValue(AppPlatform.unknown),
   ];
 }
 

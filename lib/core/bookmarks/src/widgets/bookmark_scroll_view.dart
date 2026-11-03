@@ -111,6 +111,20 @@ class _BookmarkScrollViewState extends ConsumerState<BookmarkScrollView> {
                 controller.refresh();
               });
             })
+            ..listen(bookmarkProvider, (previous, next) {
+              final previousBookmarks = previous?.valueOrNull?.bookmarks;
+              final nextBookmarks = next.valueOrNull?.bookmarks;
+
+              if (previousBookmarks == null ||
+                  nextBookmarks == null ||
+                  previousBookmarks == nextBookmarks) {
+                return;
+              }
+
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (context.mounted) controller.refresh();
+              });
+            })
             ..listen(selectedBookmarkSortTypeProvider, (_, _) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 controller.refresh();
@@ -361,7 +375,10 @@ class BookmarkContextMenu extends ConsumerWidget {
         if (!loginDetails.hasStrictSFW)
           KurumiContextMenuTile(
             title: 'Open source in browser',
-            onTap: () => launchExternalUrlString(post.bookmark.sourceUrl),
+            onTap: () => launchExternalUrlString(
+              post.bookmark.sourceUrl,
+              launcher: ref.read(externalUrlLauncherProvider),
+            ),
           ),
         if (ref.watch(isDevEnvironmentProvider))
           if (post.bookmark.booruId == auth.booruId)

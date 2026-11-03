@@ -15,6 +15,7 @@ import '../../core/posts/details/widgets.dart';
 import '../../core/search/search/routes.dart';
 import '../../core/search/search/widgets.dart';
 import 'configs/widgets.dart';
+import 'favorites/providers.dart';
 import 'favorites/widgets.dart';
 import 'home/widgets.dart';
 import 'posts/providers.dart';
@@ -88,9 +89,15 @@ class HydrusBuilder extends BaseBooruBuilder {
 
   @override
   QuickFavoriteButtonBuilder get quickFavoriteButtonBuilder =>
-      (context, post) => HydrusQuickFavoriteButton(
-        post: post,
-      );
+      (context, ref, post) =>
+          (ref
+                  .watch(hydrusCanFavoriteProvider(ref.watchConfigAuth))
+                  .valueOrNull ??
+              false)
+          ? HydrusQuickFavoriteButton(
+              post: post,
+            )
+          : null;
 
   @override
   final postDetailsUIBuilder = kHydrusPostDetailsUIBuilder;

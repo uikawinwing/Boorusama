@@ -5,15 +5,16 @@ import 'package:i18n/i18n.dart';
 import 'package:intl/intl.dart';
 import 'package:kurumi/kurumi.dart';
 import 'package:kurumi/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 // Project imports:
 import '../../../core/configs/config/providers.dart';
+import '../../../core/developer_options/blocked_media_placeholder.dart';
+import '../../../core/developer_options/providers.dart';
 import '../../../core/posts/listing/widgets.dart';
 import '../../../core/posts/post/types.dart';
 import '../../../core/users/widgets.dart';
-import '../../../core/widgets/widgets.dart';
 import '../../../foundation/clipboard.dart';
+import '../../../foundation/url_launcher.dart';
 import '../client_provider.dart';
 import '../posts/parser.dart' as parser;
 import 'providers.dart';
@@ -159,16 +160,19 @@ class _EshuushuuUserDetailsBody extends StatelessWidget {
   }
 }
 
-class _EshuushuuUserOverview extends StatelessWidget {
+class _EshuushuuUserOverview extends ConsumerWidget {
   const _EshuushuuUserOverview({required this.user});
 
   final EshuushuuUser user;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colorScheme = Kurumi.themeOf(context).colorScheme;
     final locale = Localizations.localeOf(context).toString();
     final dateFormat = DateFormat.yMd(locale);
+    final automaticMediaLoadingEnabled = ref.watch(
+      automaticMediaLoadingEnabledProvider,
+    );
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -179,25 +183,30 @@ class _EshuushuuUserOverview extends StatelessWidget {
           decoration: BoxDecoration(
             color: colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
-            image: switch (user.avatarUrl) {
-              final String url => DecorationImage(
+            image: switch ((
+              automaticMediaLoadingEnabled,
+              user.avatarUrl,
+            )) {
+              (true, final String url) => DecorationImage(
                 image: NetworkImage(url),
                 fit: BoxFit.cover,
               ),
               _ => null,
             },
           ),
-          child: user.avatarUrl == null
-              ? Center(
-                  child: Text(
-                    user.name.isNotEmpty ? user.name[0].toUpperCase() : '?',
-                    style: TextStyle(
-                      fontSize: 24,
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                )
-              : null,
+          child: switch ((automaticMediaLoadingEnabled, user.avatarUrl)) {
+            (false, final String _) => const BlockedMediaPlaceholder(),
+            (_, null) => Center(
+              child: Text(
+                user.name.isNotEmpty ? user.name[0].toUpperCase() : '?',
+                style: TextStyle(
+                  fontSize: 24,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            _ => null,
+          },
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -392,13 +401,13 @@ class _StatsItem extends StatelessWidget {
   }
 }
 
-class _PersonalInfoCard extends StatelessWidget {
+class _PersonalInfoCard extends ConsumerWidget {
   const _PersonalInfoCard({required this.user});
 
   final EshuushuuUser user;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final hintColor = Kurumi.themeOf(context).colorScheme.hintColor;
 
     final t = context.t.eshuushuu.personal_info;
@@ -423,9 +432,9 @@ class _PersonalInfoCard extends StatelessWidget {
                   const SizedBox(width: 16),
                   Expanded(
                     child: InkWell(
-                      onTap: () => launchUrl(
+                      onTap: () => launchExternalUrl(
                         Uri.parse(website),
-                        mode: LaunchMode.externalApplication,
+                        launcher: ref.read(externalUrlLauncherProvider),
                       ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.end,
@@ -503,24 +512,22 @@ class _EshuushuuUserPostsTab extends ConsumerWidget {
     final config = ref.watchConfigAuth;
     final client = ref.watch(eshuushuuClientProvider(config));
 
-    return CustomContextMenuOverlay(
-      child: PostScope(
-        fetcher: (page) => TaskEither.Do(($) async {
-          final dtos = await client.getPosts(
-            userId: isUploads ? userId : null,
-            favoritedByUserId: isUploads ? null : userId,
-            page: page,
-          );
+    return PostScope(
+      fetcher: (page) => TaskEither.Do(($) async {
+        final dtos = await client.getPosts(
+          userId: isUploads ? userId : null,
+          favoritedByUserId: isUploads ? null : userId,
+          page: page,
+        );
 
-          final posts = dtos
-              .map((dto) => parser.postDtoToPost(dto, null))
-              .toList();
+        final posts = dtos
+            .map((dto) => parser.postDtoToPost(dto, null))
+            .toList();
 
-          return posts.toResult();
-        }),
-        builder: (context, controller) => PostGrid(
-          controller: controller,
-        ),
+        return posts.toResult();
+      }),
+      builder: (context, controller) => PostGrid(
+        controller: controller,
       ),
     );
   }

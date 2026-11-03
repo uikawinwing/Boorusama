@@ -16,6 +16,7 @@ import 'package:boorusama/core/bulk_downloads/src/types/download_repository.dart
 import 'package:boorusama/core/bulk_downloads/src/types/download_session.dart';
 import 'package:boorusama/core/configs/config/types.dart';
 import 'package:boorusama/core/search/selected_tags/types.dart';
+
 import 'common.dart';
 
 final _options = DownloadTestConstants.defaultOptions;
@@ -486,8 +487,11 @@ void main() {
         ),
       );
 
-      // Wait for dry run to start
-      await Future.delayed(const Duration(milliseconds: 50));
+      await _eventually(
+        () async => (await repository.getSessionsByTaskId(task.id)).any(
+          (s) => s.status == DownloadSessionStatus.dryRun,
+        ),
+      );
 
       // Get session ID from the first session
       final sessions = await repository.getSessionsByTaskId(task.id);
@@ -505,8 +509,15 @@ void main() {
       );
       notifier = myContainer.read(bulkDownloadProvider.notifier);
 
-      // Wait for notifier to load
-      await Future.delayed(const Duration(milliseconds: 50));
+      await _eventually(
+        () async =>
+            myContainer
+                .read(bulkDownloadProvider)
+                .sessions
+                .any((s) => s.session.id == sessionId) &&
+            (await repository.getSession(sessionId))?.status ==
+                DownloadSessionStatus.pending,
+      );
 
       // Verify session is reset to pending
       final resetSession = await repository.getSession(sessionId);
@@ -1133,52 +1144,101 @@ void main() {
   });
 
   group('Session Completion Scheduling', () {
-    test('should trigger completion check when all records complete', () async {
-      // Arrange
-      final taskUpdateStreamController = StreamController<TaskUpdate>();
-      final myContainer = createBulkDownloadContainer(
-        downloadRepository: repository,
-        booruBuilder: MockBooruBuilder(),
-        taskUpdateStream: taskUpdateStreamController.stream,
-      );
+    for (final sizeLookupFails in [false, true]) {
+      test(
+        'retains completion after cleanup with size lookup failure=$sizeLookupFails',
+        () async {
+          // Arrange
+          final taskUpdateStreamController = StreamController<TaskUpdate>();
+          final myContainer = createBulkDownloadContainer(
+            downloadRepository: repository,
+            booruBuilder: MockBooruBuilder(),
+            taskUpdateStream: taskUpdateStreamController.stream,
+            taskFileSizeResolver: (_) async {
+              if (sizeLookupFails) throw StateError('File size unavailable');
+              return 64;
+            },
+          );
 
-      addTearDown(() {
-        taskUpdateStreamController.close();
-        myContainer.dispose();
-      });
+          addTearDown(() {
+            taskUpdateStreamController.close();
+            myContainer.dispose();
+          });
 
-      // Act
-      final task = await repository.createTask(_options);
-      final notifier = myContainer.read(bulkDownloadProvider.notifier);
-      await notifier.downloadFromTaskId(
-        task.id,
-        downloadConfigs: _defaultConfigs,
-      );
+          // Act
+          final task = await repository.createTask(_options);
+          final notifier = myContainer.read(bulkDownloadProvider.notifier);
+          await notifier.downloadFromTaskId(
+            task.id,
+            downloadConfigs: _defaultConfigs,
+          );
 
-      final sessions = await repository.getSessionsByTaskId(task.id);
-      final sessionId = sessions.first.id;
-      final records = await repository.getRecordsBySessionId(sessionId);
+          final sessions = await repository.getSessionsByTaskId(task.id);
+          final sessionId = sessions.first.id;
+          final records = await repository.getRecordsBySessionId(sessionId);
 
-      for (final record in records) {
-        taskUpdateStreamController.add(
-          TaskStatusUpdate(
-            DownloadTask(
-              taskId: record.downloadId,
-              url: record.url,
-              group: sessionId,
+          final finished = Completer<void>();
+          final subscription = myContainer.listen(bulkDownloadProvider, (
+            _,
+            next,
+          ) {
+            if (next.completedSessions.any((value) => value.id == sessionId) &&
+                !next.sessions.any((value) => value.id == sessionId) &&
+                !finished.isCompleted) {
+              finished.complete();
+            }
+          });
+          addTearDown(subscription.close);
+
+          for (final record in records) {
+            taskUpdateStreamController.add(
+              TaskStatusUpdate(
+                DownloadTask(
+                  taskId: record.downloadId,
+                  url: record.url,
+                  group: sessionId,
+                ),
+                TaskStatus.complete,
+              ),
+            );
+          }
+
+          await finished.future.timeout(const Duration(seconds: 5));
+
+          // Assert
+          final session = await repository.getSession(sessionId);
+          expect(session?.status, equals(DownloadSessionStatus.completed));
+          expect(await repository.getRecordsBySessionId(sessionId), isEmpty);
+          expect(
+            myContainer
+                .read(bulkDownloadProvider)
+                .completedSessions
+                .single
+                .stats
+                .totalItems,
+            records.length,
+          );
+
+          // Replayed/overlapping completion checks must preserve the original stats.
+          await Future.wait([
+            notifier.tryCompleteSession(sessionId),
+            notifier.tryCompleteSession(
+              sessionId,
+              countInfo: (total: 0, completed: 0),
             ),
-            TaskStatus.complete,
-          ),
-        );
-      }
-
-      // Allow completion check to process
-      await Future.delayed(const Duration(milliseconds: 200));
-
-      // Assert
-      final session = await repository.getSession(sessionId);
-      expect(session?.status, equals(DownloadSessionStatus.completed));
-    });
+          ]);
+          expect(
+            myContainer
+                .read(bulkDownloadProvider)
+                .completedSessions
+                .single
+                .stats
+                .totalItems,
+            records.length,
+          );
+        },
+      );
+    }
 
     test(
       'should not complete session when some records are still pending',
@@ -1322,4 +1382,17 @@ void main() {
       },
     );
   });
+}
+
+Future<void> _eventually(
+  Future<bool> Function() condition, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!await condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Condition not met within $timeout');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }

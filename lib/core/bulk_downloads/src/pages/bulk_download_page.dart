@@ -6,9 +6,6 @@ import 'package:kurumi/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 // Project imports:
-import '../../../boorus/booru/types.dart';
-import '../../../configs/config/providers.dart';
-import '../../../widgets/widgets.dart';
 import '../providers/bulk_download_notifier.dart';
 import '../providers/saved_download_task_provider.dart';
 import '../routes/internal_routes.dart';
@@ -20,21 +17,7 @@ class BulkDownloadPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final config = ref.watchConfigAuth;
-
-    return config.booruType == BooruType.zerochan
-        ? Scaffold(
-            appBar: AppBar(
-              title: Text(context.t.sideMenu.bulk_download),
-            ),
-            body: Center(
-              child: Text(
-                'Temporarily disabled due to an issue with getting the download link'
-                    .hc,
-              ),
-            ),
-          )
-        : const BulkDownloadPageInternal();
+    return const BulkDownloadPageInternal();
   }
 }
 
@@ -45,85 +28,83 @@ class BulkDownloadPageInternal extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomContextMenuOverlay(
-      child: Scaffold(
-        appBar: AppBar(
-          title: LayoutBuilder(
-            builder: (context, constraints) => Row(
-              children: [
-                Text(context.t.sideMenu.bulk_download),
-                Consumer(
-                  builder: (_, ref, _) => constraints.maxWidth >= 432
-                      ? _buildCreateButton(ref, dense: true)
-                      : const SizedBox.shrink(),
-                ),
-              ],
-            ),
+    return Scaffold(
+      appBar: AppBar(
+        title: LayoutBuilder(
+          builder: (context, constraints) => Row(
+            children: [
+              Text(context.t.sideMenu.bulk_download),
+              Consumer(
+                builder: (_, ref, _) => constraints.maxWidth >= 432
+                    ? _buildCreateButton(ref, dense: true)
+                    : const SizedBox.shrink(),
+              ),
+            ],
           ),
-          actions: [
-            Consumer(
-              builder: (_, ref, _) {
-                final hasUnseen = ref.watch(
-                  bulkDownloadProvider.select(
-                    (state) => state.hasUnseenFinishedSessions,
-                  ),
-                );
-                final notifier = ref.watch(bulkDownloadProvider.notifier);
-
-                return IconButton(
-                  icon: Badge(
-                    isLabelVisible: hasUnseen,
-                    smallSize: 8,
-                    child: const Icon(Symbols.history),
-                  ),
-                  onPressed: () {
-                    goToBulkDownloadCompletedPage(ref);
-                    notifier.clearUnseenFinishedSessions();
-                  },
-                );
-              },
-            ),
-            Consumer(
-              builder: (_, ref, _) {
-                return IconButton(
-                  icon: const Icon(Symbols.bookmark),
-                  onPressed: () {
-                    goToBulkDownloadSavedTasksPage(ref);
-                  },
-                );
-              },
-            ),
-          ],
         ),
-        body: Consumer(
-          builder: (_, ref, _) {
-            final ready = ref.watch(
-              bulkDownloadProvider.select((state) => state.ready),
-            );
+        actions: [
+          Consumer(
+            builder: (_, ref, _) {
+              final hasUnseen = ref.watch(
+                bulkDownloadProvider.select(
+                  (state) => state.hasUnseenFinishedSessions,
+                ),
+              );
+              final notifier = ref.watch(bulkDownloadProvider.notifier);
 
-            return SafeArea(
-              child: ready
-                  ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Expanded(
-                          child: BulkDownloadActionSessions(),
-                        ),
-                        LayoutBuilder(
-                          builder: (context, constraints) {
-                            return constraints.maxWidth < 600
-                                ? _buildCreateButton(ref)
-                                : const SizedBox.shrink();
-                          },
-                        ),
-                      ],
-                    )
-                  : const Center(
-                      child: CircularProgressIndicator(),
-                    ),
-            );
-          },
-        ),
+              return IconButton(
+                icon: Badge(
+                  isLabelVisible: hasUnseen,
+                  smallSize: 8,
+                  child: const Icon(Symbols.history),
+                ),
+                onPressed: () {
+                  goToBulkDownloadCompletedPage(ref);
+                  notifier.clearUnseenFinishedSessions();
+                },
+              );
+            },
+          ),
+          Consumer(
+            builder: (_, ref, _) {
+              return IconButton(
+                icon: const Icon(Symbols.bookmark),
+                onPressed: () {
+                  goToBulkDownloadSavedTasksPage(ref);
+                },
+              );
+            },
+          ),
+        ],
+      ),
+      body: Consumer(
+        builder: (_, ref, _) {
+          final ready = ref.watch(
+            bulkDownloadProvider.select((state) => state.ready),
+          );
+
+          return SafeArea(
+            child: ready
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Expanded(
+                        child: BulkDownloadActionSessions(),
+                      ),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          return constraints.maxWidth < 600
+                              ? _buildCreateButton(ref)
+                              : const SizedBox.shrink();
+                        },
+                      ),
+                    ],
+                  )
+                : const Center(
+                    child: CircularProgressIndicator(),
+                  ),
+          );
+        },
       ),
     );
   }

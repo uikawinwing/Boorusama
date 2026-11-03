@@ -30,6 +30,9 @@ abstract class Post
     with MediaInfoMixin, ImageInfoMixin, VideoInfoMixin
     implements TagDetails {
   int get id;
+
+  /// The site's identifier for exports, not the app's internal identity.
+  String? get sitePostId;
   DateTime? get createdAt;
   String get thumbnailImageUrl;
   String get sampleImageUrl;
@@ -68,5 +71,13 @@ extension PostImageX on Post {
 }
 
 extension PostX on Post {
+  Iterable<String> get knownSourceUrls => switch (this) {
+    final PostSourceUrls post => post.sourceUrls,
+    _ => [?source.url],
+  };
   String get relationshipQuery => hasParent ? 'parent:$parentId' : 'parent:$id';
+}
+
+abstract interface class PostSourceUrls {
+  Iterable<String> get sourceUrls;
 }
